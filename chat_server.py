@@ -1,5 +1,6 @@
 # chat_server.py
 #http://127.0.0.1:5000/admin/
+#d8f3b5f6a9c1e2d7b8f3c5a6b7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
 import os
 from flask import Flask, request, jsonify, send_from_directory # Dodano send_from_directory
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -52,6 +53,17 @@ app.config['SECRET_KEY'] = 'twoj_sekretny_klucz_ktory_musisz_zmienic!' # WAŻNE:
 # Inicjalizacja SQLAlchemy
 db = SQLAlchemy(app)
 
+# === NOWY BLOK - Tworzenie tabel ===
+with app.app_context():
+    logger.info("Ensuring database tables are created...")
+    try:
+        db.create_all()
+        logger.info("Database tables checked/created successfully.")
+    except Exception as e_create_db:
+        logger.error(f"Error during db.create_all(): {e_create_db}")
+        # W zależności od bazy danych i konfiguracji, tutaj można dodać
+        # bardziej zaawansowaną obsługę błędów lub logowanie.
+# === KONIEC NOWEGO BLOKU ===
 # Inicjalizacja SocketIO
 # W środowisku produkcyjnym 'cors_allowed_origins' powinno być bardziej restrykcyjne.
 # "*" pozwala na połączenia z dowolnego źródła.
