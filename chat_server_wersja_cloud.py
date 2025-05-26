@@ -2,97 +2,121 @@
 #http://127.0.0.1:5000/admin/
 #d8f3b5f6a9c1e2d7b8f3c5a6b7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
 import os
-from flask import Flask, request, jsonify, send_from_directory # Dodano send_from_directory
+from flask import Flask, request, jsonify, send_from_directory  # Dodano send_from_directory
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 # --- NOWE ZMIANY ---
-from werkzeug.utils import secure_filename # Do bezpiecznych nazw plików
-import uuid # Do generowania unikalnych nazw plików
+from werkzeug.utils import secure_filename  # Do bezpiecznych nazw plików
+import uuid  # Do generowania unikalnych nazw plików
 # --- KONIEC NOWYCH ZMIAN ---
 from email_validator import validate_email, EmailNotValidError
 import datetime
 import logging
 # --- NOWE ZMIANY (Panel Admina - Strona Webowa) ---
-from flask import render_template_string # Potrzebne do serwowania HTML jako string
+from flask import render_template_string  # Potrzebne do serwowania HTML jako string
 # --- KONIEC NOWYCH ZMIAN --
 import urllib.parse
-from flask_socketio import SocketIO, emit, join_room, leave_room, disconnect as socketio_disconnect_client # Dodaj ten import
-from flask import Flask, request, jsonify, send_from_directory, make_response # Dodaj make_response
-from flask import Flask, request, jsonify, send_from_directory, session # Dodaj 'session'
-from functools import wraps # Do tworzenia dekoratorów
+from flask_socketio import SocketIO, emit, join_room, leave_room, disconnect as socketio_disconnect_client  # Dodaj ten import
+from flask import Flask, request, jsonify, send_from_directory, make_response  # Dodaj make_response
+from flask import Flask, request, jsonify, send_from_directory, session  # Dodaj 'session'
+from functools import wraps  # Do tworzenia dekoratorów
+from flask_migrate import Migrate
 # --- NOWE ZMIANY (CHAT SERVER) ---
 # Globalny słownik do mapowania SID na user_id dla śledzenia użytkowników online
-connected_sids_to_user_id = {} # Deklaracja globalna
+connected_sids_to_user_id = {}  # Deklaracja globalna
 # --- KONIEC NOWYCH ZMIAN (CHAT SERVER) ---
 
 # --- Konfiguracja Logowania Serwera ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - (%(filename)s:%(lineno)d) - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format=
+    '%(asctime)s - %(levelname)s - (%(filename)s:%(lineno)d) - %(message)s')
 logger = logging.getLogger(__name__)
 
 # --- Inicjalizacja Aplikacji Flask i SocketIO ---
 app = Flask(__name__)
 
 # --- NOWE ZMIANY: Konfiguracja folderu UPLOAD ---
-UPLOAD_FOLDER = 'chat_uploads' # Nazwa folderu na przesłane pliki
+UPLOAD_FOLDER = 'chat_uploads'  # Nazwa folderu na przesłane pliki
 # --- NOWE ZMIANY: Poprawiona lista dozwolonych rozszerzeń ---
-ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'zip', 'rar', '7z', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'mp3', 'wav', 'ogg', 'mp4', 'webm', 'webp'} # <-- DODANO 'webp'
+ALLOWED_EXTENSIONS = {
+    'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'zip', 'rar', '7z', 'doc',
+    'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'mp3', 'wav', 'ogg', 'mp4', 'webm',
+    'webp'
+}  # <-- DODANO 'webp'
 # --- KONIEC NOWYCH ZMIAN ---
-MAX_FILE_SIZE_MB = 10 # Maksymalny rozmiar pliku w MB
+MAX_FILE_SIZE_MB = 10  # Maksymalny rozmiar pliku w MB
 
-
+# Ścieżka do folderu, w którym znajduje się chat_server.py
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+db_file = os.path.join(BASE_DIR, 'chat.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + db_file
+logger.info(f"Using SQLite database at: {db_file}")
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SECRET_KEY'] = 'twoj_sekretny_klucz_ktory_musisz_zmienic!'
 
 app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), UPLOAD_FOLDER)
-app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE_MB * 1024 * 1024 # Ustawienie limitu w bajtach
+app.config[
+    'MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE_MB * 1024 * 1024  # Ustawienie limitu w bajtach
 # --- KONIEC NOWYCH ZMIAN ---
-
-# Konfiguracja bazy danych SQLite
-# Baza danych będzie się nazywać 'chat.db' i znajdować w tym samym katalogu co skrypt.
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(os.getcwd(), 'chat.db')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False # Wyłączamy, by zużywać mniej pamięci
-app.config['SECRET_KEY'] = 'twoj_sekretny_klucz_ktory_musisz_zmienic!' # WAŻNE: ZMIEŃ NA UNIKATOWY KLUCZ
 
 # Inicjalizacja SQLAlchemy
 db = SQLAlchemy(app)
 
+# --- Flask-Migrate (punkt 3) ---
+migrate = Migrate(app, db)
+
 # Inicjalizacja SocketIO
 # W środowisku produkcyjnym 'cors_allowed_origins' powinno być bardziej restrykcyjne.
 # "*" pozwala na połączenia z dowolnego źródła.
-socketio = SocketIO(app, cors_allowed_origins="*", logger=True, engineio_logger=True,
-                    # --- ZMIANY Z POPRZEDNIEJ ITERACJI (ZACHOWANE) ---
-                    ping_interval=60,  # Wysyłaj ping co 60 sekund (domyślnie 25)
-                    ping_timeout=120   # Oczekuj na pong przez 120 sekund (domyślnie 60)
-                    # --- KONIEC ZMIAN ---
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    logger=True,
+    engineio_logger=True,
+    # --- ZMIANY Z POPRZEDNIEJ ITERACJI (ZACHOWANE) ---
+    ping_interval=60,  # Wysyłaj ping co 60 sekund (domyślnie 25)
+    ping_timeout=120  # Oczekuj na pong przez 120 sekund (domyślnie 60)
+    # --- KONIEC ZMIAN ---
 )
-
-
 
 # --- Modele Bazy Danych ---
 
 # --- NOWE ZMIANY (Panel Admina - Logowanie i Ochrona) ---
 # Konfiguracja dla admina - W PRZYSZŁOŚCI PRZENIEŚ DO BEZPIECZNIEJSZEGO MIEJSCA (np. zmienne środowiskowe, plik konfiguracyjny)
-app.config['ADMIN_USERNAME'] = os.environ.get('FLASK_ADMIN_USER', 'admin') # Domyślny admin user
-ADMIN_PASSWORD_PLAIN = os.environ.get('FLASK_ADMIN_PASS', 'supersecretpassword') # Hasło w postaci jawnej
-app.config['ADMIN_PASSWORD_HASH'] = generate_password_hash(ADMIN_PASSWORD_PLAIN)
+app.config['ADMIN_USERNAME'] = os.environ.get('FLASK_ADMIN_USER',
+                                              'admin')  # Domyślny admin user
+ADMIN_PASSWORD_PLAIN = os.environ.get(
+    'FLASK_ADMIN_PASS', 'supersecretpassword')  # Hasło w postaci jawnej
+app.config['ADMIN_PASSWORD_HASH'] = generate_password_hash(
+    ADMIN_PASSWORD_PLAIN)
 # WAŻNE: Flask potrzebuje SECRET_KEY do używania sesji. Już go masz:
 # app.config['SECRET_KEY'] = 'twoj_sekretny_klucz_ktory_musisz_zmienic!'
 
+
 def admin_required(f):
     """Dekorator do ochrony endpointów administracyjnych."""
+
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not session.get('is_admin_logged_in'):
             logger.warning("Admin endpoint access denied: Not logged in.")
-            return jsonify({"error": "Administrator access required. Please log in."}), 401 # Unauthorized
+            return jsonify({
+                "error":
+                "Administrator access required. Please log in."
+            }), 401  # Unauthorized
         return f(*args, **kwargs)
+
     return decorated_function
+
 
 @app.route('/admin/login', methods=['POST'])
 def admin_login():
     data = request.get_json()
     if not data:
         return jsonify({"error": "Missing JSON payload"}), 400
-    
+
     username = data.get('username')
     password = data.get('password')
 
@@ -105,7 +129,8 @@ def admin_login():
     stored_admin_username = app.config.get('ADMIN_USERNAME')
     stored_password_hash = app.config.get('ADMIN_PASSWORD_HASH')
 
-    if username == stored_admin_username and check_password_hash(stored_password_hash, password):
+    if username == stored_admin_username and check_password_hash(
+            stored_password_hash, password):
         session['is_admin_logged_in'] = True
         logger.info(f"Administrator '{username}' logged in successfully.")
         return jsonify({"message": "Admin logged in successfully"}), 200
@@ -113,19 +138,22 @@ def admin_login():
         logger.warning(f"Failed admin login attempt for username: {username}")
         return jsonify({"error": "Invalid admin credentials"}), 401
 
+
 @app.route('/admin/logout', methods=['POST'])
-@admin_required # Tylko zalogowany admin może się wylogować przez ten endpoint
+@admin_required  # Tylko zalogowany admin może się wylogować przez ten endpoint
 def admin_logout():
     session.pop('is_admin_logged_in', None)
     logger.info("Administrator logged out.")
     return jsonify({"message": "Admin logged out successfully"}), 200
+
 
 # --- NOWE ZMIANY (Panel Admina - API dla Blacklisty E-maili) ---
 @app.route('/admin/blacklist', methods=['GET'])
 @admin_required
 def admin_get_email_blacklist():
     try:
-        blacklisted_emails = EmailBlacklist.query.order_by(EmailBlacklist.added_at.desc()).all()
+        blacklisted_emails = EmailBlacklist.query.order_by(
+            EmailBlacklist.added_at.desc()).all()
         blacklist_data = [{
             "id": entry.id,
             "email": entry.email,
@@ -137,7 +165,9 @@ def admin_get_email_blacklist():
         logger.exception("Error fetching email blacklist for admin")
         return jsonify({"error": "Server error fetching email blacklist"}), 500
 
-@app.route('/admin/blacklist/<string:email_to_unblacklist>', methods=['DELETE'])
+
+@app.route('/admin/blacklist/<string:email_to_unblacklist>',
+           methods=['DELETE'])
 @admin_required
 def admin_remove_from_email_blacklist(email_to_unblacklist):
     # Walidacja formatu email (choć powinien być poprawny, jeśli jest w bazie)
@@ -146,19 +176,31 @@ def admin_remove_from_email_blacklist(email_to_unblacklist):
     except EmailNotValidError:
         return jsonify({"error": "Invalid email format provided"}), 400
 
-    entry_to_remove = EmailBlacklist.query.filter_by(email=validated_email).first()
+    entry_to_remove = EmailBlacklist.query.filter_by(
+        email=validated_email).first()
     if not entry_to_remove:
-        return jsonify({"error": f"Email '{validated_email}' not found on the blacklist."}), 404
+        return jsonify({
+            "error":
+            f"Email '{validated_email}' not found on the blacklist."
+        }), 404
 
     try:
         db.session.delete(entry_to_remove)
         db.session.commit()
         logger.info(f"Admin removed email '{validated_email}' from blacklist.")
-        return jsonify({"message": f"Email '{validated_email}' has been removed from the blacklist."}), 200
+        return jsonify({
+            "message":
+            f"Email '{validated_email}' has been removed from the blacklist."
+        }), 200
     except Exception as e:
         db.session.rollback()
-        logger.exception(f"Error removing email '{validated_email}' from blacklist: {e}")
-        return jsonify({"error": "Server error during email unblacklisting operation"}), 500
+        logger.exception(
+            f"Error removing email '{validated_email}' from blacklist: {e}")
+        return jsonify(
+            {"error":
+             "Server error during email unblacklisting operation"}), 500
+
+
 # --- KONIEC NOWYCH ZMIAN ---
 
 # --- NOWE ZMIANY (Panel Admina - Strona Webowa) ---
@@ -597,11 +639,13 @@ ADMIN_PANEL_HTML = """
 </html>
 """
 
+
 @app.route('/admin/panel')
-@admin_required # Dostęp tylko po zalogowaniu jako admin (sprawdzi sesję)
+@admin_required  # Dostęp tylko po zalogowaniu jako admin (sprawdzi sesję)
 def admin_panel_page():
     # Jeśli @admin_required przepuści, to znaczy, że sesja admina jest aktywna
     return render_template_string(ADMIN_PANEL_HTML)
+
 
 @app.route('/admin/blacklist/add', methods=['POST'])
 @admin_required
@@ -609,9 +653,9 @@ def admin_add_to_email_blacklist():
     data = request.get_json()
     if not data:
         return jsonify({"error": "Missing JSON payload"}), 400
-    
+
     email_to_add = data.get('email')
-    reason = data.get('reason') # Może być None
+    reason = data.get('reason')  # Może być None
 
     if not email_to_add:
         return jsonify({"error": "Email is required"}), 400
@@ -621,38 +665,64 @@ def admin_add_to_email_blacklist():
     except EmailNotValidError:
         return jsonify({"error": "Invalid email format"}), 400
 
-    existing_entry = EmailBlacklist.query.filter_by(email=validated_email).first()
+    existing_entry = EmailBlacklist.query.filter_by(
+        email=validated_email).first()
     if existing_entry:
-        return jsonify({"error": f"Email '{validated_email}' is already on the blacklist."}), 409 # Conflict
+        return jsonify({
+            "error":
+            f"Email '{validated_email}' is already on the blacklist."
+        }), 409  # Conflict
 
     try:
-        new_blacklist_entry = EmailBlacklist(email=validated_email, reason=reason)
+        new_blacklist_entry = EmailBlacklist(email=validated_email,
+                                             reason=reason)
         db.session.add(new_blacklist_entry)
         db.session.commit()
-        logger.info(f"Admin added email '{validated_email}' to blacklist. Reason: {reason if reason else 'N/A'}")
-        return jsonify({"message": f"Email '{validated_email}' has been added to the blacklist."}), 201 # Created
+        logger.info(
+            f"Admin added email '{validated_email}' to blacklist. Reason: {reason if reason else 'N/A'}"
+        )
+        return jsonify({
+            "message":
+            f"Email '{validated_email}' has been added to the blacklist."
+        }), 201  # Created
     except Exception as e:
         db.session.rollback()
-        logger.exception(f"Error adding email '{validated_email}' to blacklist: {e}")
-        return jsonify({"error": "Server error during email blacklisting operation"}), 500
+        logger.exception(
+            f"Error adding email '{validated_email}' to blacklist: {e}")
+        return jsonify(
+            {"error": "Server error during email blacklisting operation"}), 500
+
+
 # --- KONIEC NOWYCH ZMIAN ---
+
 
 # Prosty sposób na przekierowanie do panelu logowania, jeśli sesja admina nie istnieje
 # To jest obejście, bo @admin_required już zwraca 401. Klient (JS) powinien obsłużyć 401.
-@app.route('/admin/') # Bez @admin_required na tym głównym, aby móc pokazać stronę logowania
+@app.route(
+    '/admin/'
+)  # Bez @admin_required na tym głównym, aby móc pokazać stronę logowania
 def admin_index():
     if session.get('is_admin_logged_in'):
-        return render_template_string(ADMIN_PANEL_HTML) # Pokaż panel jeśli zalogowany
+        return render_template_string(
+            ADMIN_PANEL_HTML)  # Pokaż panel jeśli zalogowany
     else:
         # Zamiast renderować login tutaj, po prostu serwuj HTML, który ma logikę JS do logowania
-        return render_template_string(ADMIN_PANEL_HTML) # Zawsze serwuj główny HTML panelu
+        return render_template_string(
+            ADMIN_PANEL_HTML)  # Zawsze serwuj główny HTML panelu
+
+
 # --- KONIEC NOWYCH ZMIAN ---
 
-@app.route('/admin/status') # Prosty endpoint do sprawdzania statusu logowania admina
+
+@app.route(
+    '/admin/status')  # Prosty endpoint do sprawdzania statusu logowania admina
 @admin_required
 def admin_status():
     return jsonify({"message": "Admin is logged in."}), 200
+
+
 # --- KONIEC NOWYCH ZMIAN ---
+
 
 # --- NOWE ZMIANY (Panel Admina - Endpointy API) ---
 @app.route('/admin/users', methods=['GET'])
@@ -662,10 +732,13 @@ def admin_get_all_users():
         users = User.query.order_by(User.id).all()
         users_data = []
         # --- NOWE ZMIANY: Dodanie statusu online do danych użytkownika ---
-        online_user_ids = set(connected_sids_to_user_id.values()) # Pobierz zbiór ID online
+        online_user_ids = set(
+            connected_sids_to_user_id.values())  # Pobierz zbiór ID online
         for user in users:
-            user_dict = user.to_dict() # to_dict() już zawiera is_banned, is_admin
-            user_dict['is_online'] = user.id in online_user_ids # Dodaj nowy klucz
+            user_dict = user.to_dict(
+            )  # to_dict() już zawiera is_banned, is_admin
+            user_dict[
+                'is_online'] = user.id in online_user_ids  # Dodaj nowy klucz
             users_data.append(user_dict)
         # --- KONIEC NOWYCH ZMIAN ---
         return jsonify(users_data), 200
@@ -673,41 +746,67 @@ def admin_get_all_users():
         logger.exception("Error in admin_get_all_users")
         return jsonify({"error": "Server error fetching users"}), 500
 
+
 @app.route('/admin/users/<int:user_id>/ban', methods=['POST'])
 @admin_required
 def admin_ban_user(user_id):
     try:
-        user_to_ban = User.query.filter_by(id=user_id).first() # Lepsze niż get()
+        user_to_ban = User.query.filter_by(
+            id=user_id).first()  # Lepsze niż get()
         if not user_to_ban:
             logger.warning(f"Attempt to ban non-existent user ID: {user_id}")
             return jsonify({"error": "User not found"}), 404
-        
+
         # Jeśli banujesz siebie samego i jednocześnie jesteś "Userem" w bazie User
-        if user_to_ban.is_admin: 
-            return jsonify({"error": "Cannot ban an admin account through this panel."}), 400
+        if user_to_ban.is_admin:
+            return jsonify(
+                {"error":
+                 "Cannot ban an admin account through this panel."}), 400
 
         if user_to_ban.is_banned:
             return jsonify({"message": "User is already banned"}), 200
 
         user_to_ban.is_banned = True
-        db.session.commit() # Zatwierdź zmiany
-        logger.info(f"Admin banned user ID: {user_id} (Username: {user_to_ban.username})")
-        
+        db.session.commit()  # Zatwierdź zmiany
+        logger.info(
+            f"Admin banned user ID: {user_id} (Username: {user_to_ban.username})"
+        )
+
         # Opcjonalnie: Poinformuj i rozłącz SocketIO - (Ten fragment jest poprawny)
-        sids_for_banned_user = [sid for sid, uid in connected_sids_to_user_id.items() if uid == user_id]
-        for sid_to_disconnect in sids_for_banned_user: # Zmieniono nazwę zmiennej
-            logger.info(f"Notifying and disconnecting SID {sid_to_disconnect} for banned user {user_id}.")
-            socketio.emit('account_status_changed', {'banned': True, 'reason': 'Konto zostało zablokowane przez administratora.'}, room=sid_to_disconnect)
+        sids_for_banned_user = [
+            sid for sid, uid in connected_sids_to_user_id.items()
+            if uid == user_id
+        ]
+        for sid_to_disconnect in sids_for_banned_user:  # Zmieniono nazwę zmiennej
+            logger.info(
+                f"Notifying and disconnecting SID {sid_to_disconnect} for banned user {user_id}."
+            )
+            socketio.emit(
+                'account_status_changed', {
+                    'banned': True,
+                    'reason': 'Konto zostało zablokowane przez administratora.'
+                },
+                room=sid_to_disconnect)
             # --- NOWE ZMIANY: Poprawne rozłączanie klienta ---
             try:
                 # Użyj zaimportowanej funkcji disconnect z flask_socketio
-                socketio_disconnect_client(sid_to_disconnect, namespace='/', silent=False) # Użyj namespace, jeśli masz
-                logger.info(f"Successfully called disconnect for SID: {sid_to_disconnect}")
+                socketio_disconnect_client(
+                    sid_to_disconnect, namespace='/',
+                    silent=False)  # Użyj namespace, jeśli masz
+                logger.info(
+                    f"Successfully called disconnect for SID: {sid_to_disconnect}"
+                )
             except Exception as e_disconnect:
-                logger.error(f"Error trying to disconnect SID {sid_to_disconnect}: {e_disconnect}")
+                logger.error(
+                    f"Error trying to disconnect SID {sid_to_disconnect}: {e_disconnect}"
+                )
             # --- KONIEC NOWYCH ZMIAN ---
-            
-        return jsonify({"message": f"User '{user_to_ban.username}' has been banned and notified.", "user": user_to_ban.to_dict()}), 200
+
+        return jsonify({
+            "message":
+            f"User '{user_to_ban.username}' has been banned and notified.",
+            "user": user_to_ban.to_dict()
+        }), 200
     except Exception as e:
         db.session.rollback()
         logger.exception(f"Error banning user ID: {user_id} - {e}")
@@ -718,7 +817,8 @@ def admin_ban_user(user_id):
 @admin_required
 def admin_unban_user(user_id):
     try:
-        user_to_unban = User.query.filter_by(id=user_id).first() # Lepsze niż get()
+        user_to_unban = User.query.filter_by(
+            id=user_id).first()  # Lepsze niż get()
         if not user_to_unban:
             logger.warning(f"Attempt to unban non-existent user ID: {user_id}")
             return jsonify({"error": "User not found"}), 404
@@ -727,18 +827,31 @@ def admin_unban_user(user_id):
             return jsonify({"message": "User is not currently banned"}), 200
 
         user_to_unban.is_banned = False
-        db.session.commit() # Zatwierdź zmiany
-        logger.info(f"Admin unbanned user ID: {user_id} (Username: {user_to_unban.username})")
-        
-        sids_for_unbanned_user = [sid for sid, uid in connected_sids_to_user_id.items() if uid == user_id]
+        db.session.commit()  # Zatwierdź zmiany
+        logger.info(
+            f"Admin unbanned user ID: {user_id} (Username: {user_to_unban.username})"
+        )
+
+        sids_for_unbanned_user = [
+            sid for sid, uid in connected_sids_to_user_id.items()
+            if uid == user_id
+        ]
         for sid in sids_for_unbanned_user:
-            socketio.emit('account_status_changed', {'banned': False, 'reason': 'Twoje konto zostało odblokowane.'}, room=sid)
-            
-        return jsonify({"message": f"User '{user_to_unban.username}' has been unbanned.", "user": user_to_unban.to_dict()}), 200
+            socketio.emit('account_status_changed', {
+                'banned': False,
+                'reason': 'Twoje konto zostało odblokowane.'
+            },
+                          room=sid)
+
+        return jsonify({
+            "message": f"User '{user_to_unban.username}' has been unbanned.",
+            "user": user_to_unban.to_dict()
+        }), 200
     except Exception as e:
         db.session.rollback()
         logger.exception(f"Error unbanning user ID: {user_id} - {e}")
-        return jsonify({"error": "Server error during unbanning operation"}), 500
+        return jsonify({"error":
+                        "Server error during unbanning operation"}), 500
 
 
 @app.route('/admin/users/<int:user_id>', methods=['DELETE'])
@@ -747,83 +860,125 @@ def admin_delete_user(user_id):
     try:
         user_to_delete = User.query.filter_by(id=user_id).first()
         if not user_to_delete:
-            logger.warning(f"Attempt to delete non-existent user ID: {user_id}")
+            logger.warning(
+                f"Attempt to delete non-existent user ID: {user_id}")
             return jsonify({"error": "User not found"}), 404
-        
+
         if user_to_delete.is_admin:
-            logger.warning(f"Attempt to delete admin account (ID: {user_id}, Username: {user_to_delete.username}). Denied.")
-            return jsonify({"error": "Admin account cannot be deleted this way."}), 400
-        
+            logger.warning(
+                f"Attempt to delete admin account (ID: {user_id}, Username: {user_to_delete.username}). Denied."
+            )
+            return jsonify(
+                {"error": "Admin account cannot be deleted this way."}), 400
+
         # --- POPRAWKA: Zdefiniuj username_deleted PRZED użyciem ---
-        username_deleted_for_event = user_to_delete.username # Zapamiętaj nazwę dla eventu
+        username_deleted_for_event = user_to_delete.username  # Zapamiętaj nazwę dla eventu
         # --- KONIEC POPRAWKI ---
 
         # Usuwanie relacji i wiadomości (bez zmian, ale upewnij się, że działa)
         BlockedRelationship.query.filter((BlockedRelationship.blocker_id == user_id) | \
                                        (BlockedRelationship.blocked_id == user_id)).delete(synchronize_session=False)
-        RoomMembership.query.filter_by(user_id=user_id).delete(synchronize_session=False)
-        
-        messages_by_user = Message.query.filter( (Message.sender_id == user_id) | (Message.receiver_id == user_id) ).all()
+        RoomMembership.query.filter_by(user_id=user_id).delete(
+            synchronize_session=False)
+
+        messages_by_user = Message.query.filter(
+            (Message.sender_id == user_id)
+            | (Message.receiver_id == user_id)).all()
         for msg in messages_by_user:
             if msg.sender_id == user_id:
                 msg.sender_id = None
             if msg.receiver_id == user_id:
                 msg.receiver_id = None
-        
+
         db.session.delete(user_to_delete)
         db.session.commit()
-        
-        sids_for_deleted_user = [sid for sid, uid in connected_sids_to_user_id.items() if uid == user_id]
+
+        sids_for_deleted_user = [
+            sid for sid, uid in connected_sids_to_user_id.items()
+            if uid == user_id
+        ]
         for sid_to_disconnect_del in sids_for_deleted_user:
-            logger.info(f"Notifying and disconnecting SID {sid_to_disconnect_del} for deleted user {user_id}.")
+            logger.info(
+                f"Notifying and disconnecting SID {sid_to_disconnect_del} for deleted user {user_id}."
+            )
             # --- POPRAWKA: Użyj poprawnej nazwy zmiennej dla username ---
-            socketio.emit('account_deleted', {'user_id': user_id, 'username': username_deleted_for_event}, room=sid_to_disconnect_del)
+            socketio.emit('account_deleted', {
+                'user_id': user_id,
+                'username': username_deleted_for_event
+            },
+                          room=sid_to_disconnect_del)
             # --- KONIEC POPRAWKI ---
             # --- POPRAWKA: Użyj zaimportowanej funkcji disconnect ---
             try:
-                socketio_disconnect_client(sid_to_disconnect_del, namespace='/', silent=False)
-                logger.info(f"Successfully called disconnect for SID: {sid_to_disconnect_del} (deleted user)")
+                socketio_disconnect_client(sid_to_disconnect_del,
+                                           namespace='/',
+                                           silent=False)
+                logger.info(
+                    f"Successfully called disconnect for SID: {sid_to_disconnect_del} (deleted user)"
+                )
             except Exception as e_disconnect_del:
-                logger.error(f"Error trying to disconnect SID {sid_to_disconnect_del} (deleted user): {e_disconnect_del}")
+                logger.error(
+                    f"Error trying to disconnect SID {sid_to_disconnect_del} (deleted user): {e_disconnect_del}"
+                )
             # --- KONIEC POPRAWKI ---
 
         # --- POPRAWKA: Użyj poprawnej nazwy zmiennej dla username ---
-        socketio.emit('user_offline', {'user_id': user_id, 'username': username_deleted_for_event}) 
-        logger.debug(f"Emitted 'user_offline' for deleted user {user_id} ({username_deleted_for_event}) to all clients.")
+        socketio.emit('user_offline', {
+            'user_id': user_id,
+            'username': username_deleted_for_event
+        })
+        logger.debug(
+            f"Emitted 'user_offline' for deleted user {user_id} ({username_deleted_for_event}) to all clients."
+        )
         # --- KONIEC POPRAWKI ---
-        
-        logger.info(f"Admin deleted user ID: {user_id} (Username: {username_deleted_for_event}).")
-        return jsonify({"message": f"User '{username_deleted_for_event}' and associated data has been deleted."}), 200
+
+        logger.info(
+            f"Admin deleted user ID: {user_id} (Username: {username_deleted_for_event})."
+        )
+        return jsonify({
+            "message":
+            f"User '{username_deleted_for_event}' and associated data has been deleted."
+        }), 200
     except Exception as e:
         db.session.rollback()
         logger.exception(f"Error deleting user ID: {user_id} - {e}")
         return jsonify({"error": "Server error during user deletion"}), 500
 
+
 # W handle_send_message - już jest sprawdzanie if sender.is_banned, to jest OK.
 # Po rozłączeniu przez socketio.disconnect(sid), nowy event wysyłania wiadomości od tego SID i tak by nie doszedł,
 # a przy ponownym połączeniu i tak byłoby sprawdzane 'is_banned' przy evencie 'authenticate'.
 
+
 # --- NOWE ZMIANY (Blacklista E-maili - Model) ---
 class EmailBlacklist(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(120), unique=True, nullable=False) # Unikalny zablokowany email
-    reason = db.Column(db.String(255), nullable=True) # Opcjonalny powód dodania do blacklisty
+    email = db.Column(db.String(120), unique=True,
+                      nullable=False)  # Unikalny zablokowany email
+    reason = db.Column(db.String(255),
+                       nullable=True)  # Opcjonalny powód dodania do blacklisty
     added_at = db.Column(db.DateTime, default=datetime.datetime.now)
 
     def __repr__(self):
         return f'<EmailBlacklist {self.email}>'
+
+
 # --- KONIEC NOWYCH ZMIAN ---
+
 
 class User(db.Model):
     """Model użytkownika czatu."""
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False) # Nick/nazwa użytkownika
+    username = db.Column(db.String(80), unique=True,
+                         nullable=False)  # Nick/nazwa użytkownika
     email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128), nullable=False) # Hasło hashowane
+    password_hash = db.Column(db.String(128),
+                              nullable=False)  # Hasło hashowane
     created_at = db.Column(db.DateTime, default=datetime.datetime.now)
     # --- NOWE ZMIANY (Panel Admina - Model User) ---
     is_banned = db.Column(db.Boolean, default=False, nullable=False)
     is_admin = db.Column(db.Boolean, default=False, nullable=False)
+
     # --- KONIEC NOWYCH ZMIAN ---
 
     def set_password(self, password):
@@ -842,51 +997,86 @@ class User(db.Model):
             'username': self.username,
             'email': self.email,
             'created_at': self.created_at.isoformat(),
-            'is_banned': self.is_banned, # Dodajemy status zbanowania
-            'is_admin': self.is_admin    # Dodajemy status admina
+            'is_banned': self.is_banned,  # Dodajemy status zbanowania
+            'is_admin': self.is_admin  # Dodajemy status admina
         }
         # --- KONIEC NOWYCH ZMIAN ---
 
 
 class BlockedRelationship(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    blocker_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False) # Kto zablokował
-    blocked_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False) # Kto został zablokowany
+    blocker_id = db.Column(db.Integer,
+                           db.ForeignKey('user.id', ondelete='CASCADE'),
+                           nullable=False)  # Kto zablokował
+    blocked_id = db.Column(db.Integer,
+                           db.ForeignKey('user.id', ondelete='CASCADE'),
+                           nullable=False)  # Kto został zablokowany
     timestamp = db.Column(db.DateTime, default=datetime.datetime.now)
 
     # Upewnij się, że para (blocker_id, blocked_id) jest unikalna
-    __table_args__ = (db.UniqueConstraint('blocker_id', 'blocked_id', name='_blocker_blocked_uc'),)
+    __table_args__ = (db.UniqueConstraint('blocker_id',
+                                          'blocked_id',
+                                          name='_blocker_blocked_uc'), )
 
-    blocker = db.relationship('User', foreign_keys=[blocker_id], backref='blocking_relationships')
-    blocked_user = db.relationship('User', foreign_keys=[blocked_id], backref='blocked_by_relationships')
+    blocker = db.relationship('User',
+                              foreign_keys=[blocker_id],
+                              backref='blocking_relationships')
+    blocked_user = db.relationship('User',
+                                   foreign_keys=[blocked_id],
+                                   backref='blocked_by_relationships')
 
     def __repr__(self):
         return f'<BlockedRelationship {self.blocker_id} blocks {self.blocked_id}>'
 
+
 class Message(db.Model):
     """Model wiadomości czatu."""
     id = db.Column(db.Integer, primary_key=True)
-    sender_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
+    sender_id = db.Column(db.Integer,
+                          db.ForeignKey('user.id', ondelete='SET NULL'),
+                          nullable=True)
     # --- NOWE ZMIANY (CHAT GRUPOWY - Etap 1/5) ---
-    receiver_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='SET NULL'), nullable=True) # Pozostawiamy dla prywatnych wiadomości
-    room_id = db.Column(db.Integer, db.ForeignKey('chat_room.id'), nullable=True) # Nowe pole: ID pokoju czatu (NULL dla wiadomości prywatnych)
+    receiver_id = db.Column(
+        db.Integer,
+        db.ForeignKey('user.id', ondelete='SET NULL'),
+        nullable=True)  # Pozostawiamy dla prywatnych wiadomości
+    room_id = db.Column(
+        db.Integer, db.ForeignKey('chat_room.id'), nullable=True
+    )  # Nowe pole: ID pokoju czatu (NULL dla wiadomości prywatnych)
     # --- KONIEC NOWYCH ZMIAN ---
-    content = db.Column(db.Text, nullable=True) # Wiadomość tekstowa może być teraz opcjonalna, jeśli jest załącznik
+    content = db.Column(
+        db.Text, nullable=True
+    )  # Wiadomość tekstowa może być teraz opcjonalna, jeśli jest załącznik
     timestamp = db.Column(db.DateTime, default=datetime.datetime.now)
-    edited_at = db.Column(db.DateTime, nullable=True) # Data i czas ostatniej edycji
+    edited_at = db.Column(db.DateTime,
+                          nullable=True)  # Data i czas ostatniej edycji
 
-    replied_to_message_id = db.Column(db.Integer, db.ForeignKey('message.id'), nullable=True)
-    replied_to_message = db.relationship('Message', remote_side=[id], backref='replies', uselist=False)
+    replied_to_message_id = db.Column(db.Integer,
+                                      db.ForeignKey('message.id'),
+                                      nullable=True)
+    replied_to_message = db.relationship('Message',
+                                         remote_side=[id],
+                                         backref='replies',
+                                         uselist=False)
 
     attachment_server_filename = db.Column(db.String(255), nullable=True)
     attachment_original_filename = db.Column(db.String(255), nullable=True)
     attachment_mimetype = db.Column(db.String(100), nullable=True)
-    is_read_by_receiver = db.Column(db.Boolean, default=False, nullable=False) # Dotyczy tylko prywatnych wiadomości, nie grup
+    is_read_by_receiver = db.Column(
+        db.Boolean, default=False,
+        nullable=False)  # Dotyczy tylko prywatnych wiadomości, nie grup
 
-    sender = db.relationship('User', foreign_keys=[sender_id], backref='sent_messages')
-    receiver = db.relationship('User', foreign_keys=[receiver_id], backref='received_messages')
+    sender = db.relationship('User',
+                             foreign_keys=[sender_id],
+                             backref='sent_messages')
+    receiver = db.relationship('User',
+                               foreign_keys=[receiver_id],
+                               backref='received_messages')
     # --- NOWE ZMIANY (CHAT GRUPOWY - Etap 1/5) ---
-    room = db.relationship('ChatRoom', foreign_keys=[room_id], backref='messages') # Relacja do pokoju
+    room = db.relationship('ChatRoom',
+                           foreign_keys=[room_id],
+                           backref='messages')  # Relacja do pokoju
+
     # --- KONIEC NOWYCH ZMIAN ---
 
     def to_dict(self):
@@ -895,11 +1085,12 @@ class Message(db.Model):
             'sender_id': self.sender_id,
             # --- NOWE ZMIANY (CHAT GRUPOWY - Etap 1/5) ---
             'receiver_id': self.receiver_id,
-            'room_id': self.room_id, # Dodajemy room_id
+            'room_id': self.room_id,  # Dodajemy room_id
             # --- KONIEC NOWYCH ZMIAN ---
             'content': self.content,
             'timestamp': self.timestamp.isoformat(),
-            'sender_username': self.sender.username if self.sender else "Nieznany Nadawca",
+            'sender_username':
+            self.sender.username if self.sender else "Nieznany Nadawca",
             'attachment_server_filename': self.attachment_server_filename,
             'attachment_original_filename': self.attachment_original_filename,
             'attachment_mimetype': self.attachment_mimetype,
@@ -913,57 +1104,86 @@ class Message(db.Model):
             # Aby uniknąć rekurencji (wiadomość cytuje wiadomość, która cytuje...),
             # zwracamy tylko podstawowe informacje o cytowanej wiadomości.
             data['replied_to_message_preview'] = {
-                'id': self.replied_to_message.id,
-                'sender_id': self.replied_to_message.sender_id,
-                'sender_username': self.replied_to_message.sender.username if self.replied_to_message.sender else "Nieznany",
-                'content': self.replied_to_message.content[:50] + "..." if self.replied_to_message.content and len(self.replied_to_message.content) > 50 else self.replied_to_message.content,
-                'attachment_original_filename': self.replied_to_message.attachment_original_filename
+                'id':
+                self.replied_to_message.id,
+                'sender_id':
+                self.replied_to_message.sender_id,
+                'sender_username':
+                self.replied_to_message.sender.username
+                if self.replied_to_message.sender else "Nieznany",
+                'content':
+                self.replied_to_message.content[:50] +
+                "..." if self.replied_to_message.content
+                and len(self.replied_to_message.content) > 50 else
+                self.replied_to_message.content,
+                'attachment_original_filename':
+                self.replied_to_message.attachment_original_filename
             }
         return data
         # --- KONIEC NOWYCH ZMIAN ---
+
 
 # --- NOWE ZMIANY (CHAT SERVER - Zarządzanie pokojem przez admina ETAP 1/3) ---
 class ChatRoom(db.Model):
     """Model pokoju czatu (dla wiadomości grupowych)."""
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), unique=True, nullable=False)
-    creator_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='SET NULL'), nullable=True) # Twórca pokoju, może być adminem
+    creator_id = db.Column(db.Integer,
+                           db.ForeignKey('user.id', ondelete='SET NULL'),
+                           nullable=True)  # Twórca pokoju, może być adminem
     created_at = db.Column(db.DateTime, default=datetime.datetime.now)
     password_hash = db.Column(db.String(128), nullable=True)
-    
-    creator = db.relationship('User', foreign_keys=[creator_id]) # Relacja do twórcy
+
+    creator = db.relationship('User',
+                              foreign_keys=[creator_id])  # Relacja do twórcy
 
     def to_dict(self):
         member_ids = [membership.user_id for membership in self.memberships]
         return {
             'id': self.id,
             'name': self.name,
-            'creator_id': self.creator_id, # Dodaj creator_id
-            'creator_username': self.creator.username if self.creator else "Nieznany", # Dodaj username twórcy
+            'creator_id': self.creator_id,  # Dodaj creator_id
+            'creator_username': self.creator.username
+            if self.creator else "Nieznany",  # Dodaj username twórcy
             'created_at': self.created_at.isoformat(),
             'has_password': self.password_hash is not None,
             'member_ids': member_ids
         }
-    
+
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
+
+
 # --- KONIEC NOWYCH ZMIAN (CHAT SERVER - Zarządzanie pokojem przez admina ETAP 1/3) ---
+
 
 class RoomMembership(db.Model):
     """Model reprezentujący członkostwo użytkownika w pokoju czatu."""
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
-    room_id = db.Column(db.Integer, db.ForeignKey('chat_room.id', ondelete='CASCADE'), nullable=False)
+    user_id = db.Column(db.Integer,
+                        db.ForeignKey('user.id', ondelete='CASCADE'),
+                        nullable=False)
+    room_id = db.Column(db.Integer,
+                        db.ForeignKey('chat_room.id', ondelete='CASCADE'),
+                        nullable=False)
     # ondelete='CASCADE' oznacza, że jeśli użytkownik lub pokój zostaną usunięte, członkostwo również zniknie.
-    
-    # Upewnij się, że każdy użytkownik może być tylko raz w danym pokoju
-    __table_args__ = (db.UniqueConstraint('user_id', 'room_id', name='_user_room_uc'),)
 
-    user = db.relationship('User', backref=db.backref('room_memberships', lazy=True, cascade="all, delete-orphan"))
-    room = db.relationship('ChatRoom', backref=db.backref('memberships', lazy=True, cascade="all, delete-orphan"))
+    # Upewnij się, że każdy użytkownik może być tylko raz w danym pokoju
+    __table_args__ = (db.UniqueConstraint('user_id',
+                                          'room_id',
+                                          name='_user_room_uc'), )
+
+    user = db.relationship('User',
+                           backref=db.backref('room_memberships',
+                                              lazy=True,
+                                              cascade="all, delete-orphan"))
+    room = db.relationship('ChatRoom',
+                           backref=db.backref('memberships',
+                                              lazy=True,
+                                              cascade="all, delete-orphan"))
 
     def to_dict(self):
         return {
@@ -971,79 +1191,102 @@ class RoomMembership(db.Model):
             'user_id': self.user_id,
             'room_id': self.room_id
         }
+
+
 # --- KONIEC NOWYCH ZMIAN ---
+
 
 @app.route('/')
 def index():
     return "Chat Server is running!"
 
+
 @app.route('/users/<int:user_to_block_id>/block', methods=['POST'])
 def block_user_endpoint(user_to_block_id):
     data = request.get_json()
     if not data: return jsonify({"error": "Missing JSON payload"}), 400
-    
-    blocker_id = data.get('blocker_id') # Klient musi przesłać swoje ID jako blokującego
-    if blocker_id is None: return jsonify({"error": "Blocker ID is required"}), 400
 
-    if blocker_id == user_to_block_id: return jsonify({"error": "Cannot block yourself"}), 400
-    
+    blocker_id = data.get(
+        'blocker_id')  # Klient musi przesłać swoje ID jako blokującego
+    if blocker_id is None:
+        return jsonify({"error": "Blocker ID is required"}), 400
+
+    if blocker_id == user_to_block_id:
+        return jsonify({"error": "Cannot block yourself"}), 400
+
     # Sprawdź, czy użytkownicy istnieją
     blocker = User.query.get(blocker_id)
     blocked = User.query.get(user_to_block_id)
-    if not blocker or not blocked: return jsonify({"error": "Blocker or blocked user not found"}), 404
+    if not blocker or not blocked:
+        return jsonify({"error": "Blocker or blocked user not found"}), 404
 
     # Sprawdź, czy relacja już nie istnieje
-    existing_block = BlockedRelationship.query.filter_by(blocker_id=blocker_id, blocked_id=user_to_block_id).first()
+    existing_block = BlockedRelationship.query.filter_by(
+        blocker_id=blocker_id, blocked_id=user_to_block_id).first()
     if existing_block:
         return jsonify({"message": "User already blocked"}), 200
 
     try:
-        new_block = BlockedRelationship(blocker_id=blocker_id, blocked_id=user_to_block_id)
+        new_block = BlockedRelationship(blocker_id=blocker_id,
+                                        blocked_id=user_to_block_id)
         db.session.add(new_block)
         db.session.commit()
         logger.info(f"User {blocker_id} blocked user {user_to_block_id}.")
         # Opcjonalnie: Poinformuj zablokowanego użytkownika (jeśli chcemy taką funkcjonalność)
         # socketio.emit('you_were_blocked_by', {'blocker_id': blocker_id, 'blocker_username': blocker.username}, room=str(user_to_block_id))
-        return jsonify({"message": f"User {blocked.username} is now blocked."}), 201
+        return jsonify({"message":
+                        f"User {blocked.username} is now blocked."}), 201
     except Exception as e:
         db.session.rollback()
         logger.exception(f"Error blocking user: {e}")
         return jsonify({"error": "Server error during block operation"}), 500
+
 
 @app.route('/users/<int:user_to_unblock_id>/block', methods=['DELETE'])
 def unblock_user_endpoint(user_to_unblock_id):
     data = request.get_json()
     if not data: return jsonify({"error": "Missing JSON payload"}), 400
 
-    unblocker_id = data.get('unblocker_id') # Klient przesyła swoje ID
-    if unblocker_id is None: return jsonify({"error": "Unblocker ID is required"}), 400
-    
-    block_to_remove = BlockedRelationship.query.filter_by(blocker_id=unblocker_id, blocked_id=user_to_unblock_id).first()
+    unblocker_id = data.get('unblocker_id')  # Klient przesyła swoje ID
+    if unblocker_id is None:
+        return jsonify({"error": "Unblocker ID is required"}), 400
+
+    block_to_remove = BlockedRelationship.query.filter_by(
+        blocker_id=unblocker_id, blocked_id=user_to_unblock_id).first()
     if not block_to_remove:
-        return jsonify({"error": "Block relationship not found or user not blocked by you"}), 404
-    
+        return jsonify({
+            "error":
+            "Block relationship not found or user not blocked by you"
+        }), 404
+
     try:
         db.session.delete(block_to_remove)
         db.session.commit()
-        logger.info(f"User {unblocker_id} unblocked user {user_to_unblock_id}.")
+        logger.info(
+            f"User {unblocker_id} unblocked user {user_to_unblock_id}.")
         # Opcjonalnie: Poinformuj odblokowanego użytkownika
         # unblocked_user_obj = User.query.get(user_to_unblock_id)
         # if unblocked_user_obj:
         # socketio.emit('you_were_unblocked_by', {'unblocker_id': unblocker_id, 'unblocker_username': User.query.get(unblocker_id).username}, room=str(user_to_unblock_id))
-        return jsonify({"message": f"User {User.query.get(user_to_unblock_id).username} has been unblocked."}), 200
+        return jsonify({
+            "message":
+            f"User {User.query.get(user_to_unblock_id).username} has been unblocked."
+        }), 200
     except Exception as e:
         db.session.rollback()
         logger.exception(f"Error unblocking user: {e}")
         return jsonify({"error": "Server error during unblock operation"}), 500
 
+
 # --- NOWE ZMIANY ---
 @app.route('/user/<int:user_id>', methods=['DELETE'])
 def delete_user_account(user_id):
     data = request.get_json()
-    password = data.get('password') # Wymagaj hasła do potwierdzenia
+    password = data.get('password')  # Wymagaj hasła do potwierdzenia
 
     if not password:
-        return jsonify({"error": "Password is required to delete account"}), 400
+        return jsonify({"error":
+                        "Password is required to delete account"}), 400
 
     user_to_delete = User.query.get(user_id)
     if not user_to_delete:
@@ -1051,7 +1294,7 @@ def delete_user_account(user_id):
 
     # Weryfikacja hasła
     if not user_to_delete.check_password(password):
-        return jsonify({"error": "Incorrect password"}), 401 # Unauthorized
+        return jsonify({"error": "Incorrect password"}), 401  # Unauthorized
 
     try:
         # WAŻNE: W tej implementacji usuwamy TYLKO rekord użytkownika.
@@ -1062,20 +1305,28 @@ def delete_user_account(user_id):
         # a) Kaskadowe usuwanie wiadomości (np. za pomocą `db.relationship(..., cascade="all, delete-orphan")`)
         # b) Zmiana wiadomości na "Użytkownik usunięty" bez usuwania rekordu wiadomości.
         # Dla obecnych celów, to rozwiązanie jest wystarczające i minimalizuje ryzyko utraty innych danych.
-        db.session.delete(user_to_delete) # Usuń użytkownika
+        db.session.delete(user_to_delete)  # Usuń użytkownika
 
         # --- NOWE ZMIANY (Blacklista E-maili - Dodawanie przy usuwaniu konta) ---
         # Sprawdź, czy email już nie jest na blackliście (na wszelki wypadek)
-        existing_blacklist_entry = EmailBlacklist.query.filter_by(email=email_to_blacklist).first()
+        existing_blacklist_entry = EmailBlacklist.query.filter_by(
+            email=email_to_blacklist).first()
         if not existing_blacklist_entry:
-            blacklist_entry = EmailBlacklist(email=email_to_blacklist, reason=f"Account deleted by admin (User ID: {user_id})")
+            blacklist_entry = EmailBlacklist(
+                email=email_to_blacklist,
+                reason=f"Account deleted by admin (User ID: {user_id})")
             db.session.add(blacklist_entry)
-            logger.info(f"Email '{email_to_blacklist}' added to blacklist upon account deletion.")
+            logger.info(
+                f"Email '{email_to_blacklist}' added to blacklist upon account deletion."
+            )
         else:
-            logger.info(f"Email '{email_to_blacklist}' was already on the blacklist.")
+            logger.info(
+                f"Email '{email_to_blacklist}' was already on the blacklist.")
         # --- KONIEC NOWYCH ZMIAN ---
         db.session.commit()
-        logger.info(f"User account deleted: User ID {user_id} (Username: {user_to_delete.username})")
+        logger.info(
+            f"User account deleted: User ID {user_id} (Username: {user_to_delete.username})"
+        )
 
         # Opcjonalnie: Poinformuj innych użytkowników SocketIO, że ten użytkownik został usunięty
         # (np. poprzez specjalny event 'user_account_deleted').
@@ -1086,66 +1337,88 @@ def delete_user_account(user_id):
         db.session.rollback()
         logger.error(f"Error deleting user account {user_id}: {e}")
         return jsonify({"error": "Server error during deletion"}), 500
+
+
 # --- KONIEC NOWYCH ZMIAN ---
+
 
 # --- NOWE ZMIANY (CHAT GRUPOWY - Etap 2/5) ---
 @app.route('/rooms', methods=['POST'])
 def create_room():
     data = request.get_json()
     name = data.get('name')
-    creator_id_from_request = data.get('creator_id') # Pobieramy creator_id z żądania
+    creator_id_from_request = data.get(
+        'creator_id')  # Pobieramy creator_id z żądania
     password = data.get('password')
 
     if not name:
         return jsonify({"error": "Room name cannot be empty"}), 400
     if not (3 <= len(name) <= 100):
-        return jsonify({"error": "Room name must be between 3 and 100 characters"}), 400
+        return jsonify(
+            {"error": "Room name must be between 3 and 100 characters"}), 400
     # --- NOWE ZMIANY (CHAT SERVER - Zarządzanie pokojem przez admina ETAP 1/3) ---
-    if not creator_id_from_request: # Sprawdź, czy creator_id zostało przesłane
-        return jsonify({"error": "Creator ID is required to create a room"}), 400
+    if not creator_id_from_request:  # Sprawdź, czy creator_id zostało przesłane
+        return jsonify({"error":
+                        "Creator ID is required to create a room"}), 400
     # --- KONIEC NOWYCH ZMIAN (CHAT SERVER - Zarządzanie pokojem przez admina ETAP 1/3) ---
 
     if ChatRoom.query.filter_by(name=name).first():
         return jsonify({"error": "Room with this name already exists"}), 409
 
-    creator = User.query.get(creator_id_from_request) # Użyj creator_id_from_request
+    creator = User.query.get(
+        creator_id_from_request)  # Użyj creator_id_from_request
     if not creator:
         return jsonify({"error": "Creator user not found"}), 404
 
     try:
         # --- NOWE ZMIANY (CHAT SERVER - Zarządzanie pokojem przez admina ETAP 1/3) ---
-        new_room = ChatRoom(name=name, creator_id=creator.id) # Ustaw creator_id
+        new_room = ChatRoom(name=name,
+                            creator_id=creator.id)  # Ustaw creator_id
         # --- KONIEC NOWYCH ZMIAN (CHAT SERVER - Zarządzanie pokojem przez admina ETAP 1/3) ---
-        if password: 
+        if password:
             new_room.set_password(password)
         db.session.add(new_room)
-        db.session.flush() 
+        db.session.flush()
 
-        membership = RoomMembership(user_id=creator.id, room_id=new_room.id) # Użyj creator.id
+        membership = RoomMembership(user_id=creator.id,
+                                    room_id=new_room.id)  # Użyj creator.id
         db.session.add(membership)
-        
+
         db.session.commit()
-        logger.info(f"New chat room created: '{name}' by User ID {creator.id}. Creator set to {new_room.creator_id}. Has password: {new_room.password_hash is not None}")
+        logger.info(
+            f"New chat room created: '{name}' by User ID {creator.id}. Creator set to {new_room.creator_id}. Has password: {new_room.password_hash is not None}"
+        )
 
         # --- NOWE ZMIANY ---
         # Poinformuj wszystkich klientów SocketIO o nowo utworzonym pokoju.
         # Domyślnie emit() bez argumentu `room` wysyła do wszystkich podłączonych.
-        room_data_for_socket = new_room.to_dict() # Pobierz słownik danych pokoju
-        socketio.emit('new_room_created', room_data_for_socket) # Emisja eventu
-        logger.info(f"Emitted 'new_room_created' event to all clients with data: {room_data_for_socket}")
+        room_data_for_socket = new_room.to_dict(
+        )  # Pobierz słownik danych pokoju
+        socketio.emit('new_room_created',
+                      room_data_for_socket)  # Emisja eventu
+        logger.info(
+            f"Emitted 'new_room_created' event to all clients with data: {room_data_for_socket}"
+        )
         # --- KONIEC NOWYCH ZMIAN ---
 
-        return jsonify({"message": "Room created successfully", "room": new_room.to_dict()}), 201
+        return jsonify({
+            "message": "Room created successfully",
+            "room": new_room.to_dict()
+        }), 201
     except Exception as e:
         db.session.rollback()
         logger.error(f"Error creating room: {e}")
         return jsonify({"error": "Server error during room creation"}), 500
+
+
 # --- KONIEC ZMIAN w create_room ---
+
 
 @app.route('/rooms', methods=['GET'])
 def get_all_rooms():
     rooms = ChatRoom.query.all()
     return jsonify([room.to_dict() for room in rooms]), 200
+
 
 # --- NOWE ZMIANY (CHAT GRUPOWY - Etap 3/5) ---
 @app.route('/rooms/<int:room_id>/members', methods=['POST'])
@@ -1153,7 +1426,8 @@ def add_room_member(room_id):
     data = request.get_json()
     user_id = data.get('user_id')
     # --- NOWE ZMIANY (CHAT GRUPOWY - Bezpieczeństwo - Etap 2/5) ---
-    password = data.get('password') # Hasło do pokoju (wymagane, jeśli pokój ma hasło)
+    password = data.get(
+        'password')  # Hasło do pokoju (wymagane, jeśli pokój ma hasło)
     # --- KONIEC NOWYCH ZMIAN ---
 
     if not user_id:
@@ -1162,28 +1436,33 @@ def add_room_member(room_id):
     room = ChatRoom.query.get(room_id)
     if not room:
         return jsonify({"error": "Room not found"}), 404
-    
+
     user = User.query.get(user_id)
     if not user:
         return jsonify({"error": "User not found"}), 404
 
     # --- NOWE ZMIANY (CHAT GRUPOWY - Bezpieczeństwo - Etap 2/5) ---
     # Weryfikacja hasła, jeśli pokój jest chroniony
-    if room.password_hash: # Jeśli pokój ma ustawione hasło
+    if room.password_hash:  # Jeśli pokój ma ustawione hasło
         if not password:
-            return jsonify({"error": "Password is required to join this room"}), 401 # Unauthorized
+            return jsonify({"error": "Password is required to join this room"
+                            }), 401  # Unauthorized
         if not room.check_password(password):
-            return jsonify({"error": "Incorrect password for this room"}), 401 # Unauthorized
+            return jsonify({"error": "Incorrect password for this room"
+                            }), 401  # Unauthorized
     # --- KONIEC NOWYCH ZMIAN ---
 
-    if RoomMembership.query.filter_by(user_id=user_id, room_id=room_id).first():
-        return jsonify({"message": "User is already a member of this room"}), 200 # Już jest członkiem
+    if RoomMembership.query.filter_by(user_id=user_id,
+                                      room_id=room_id).first():
+        return jsonify({"message": "User is already a member of this room"
+                        }), 200  # Już jest członkiem
 
     try:
         membership = RoomMembership(user_id=user_id, room_id=room_id)
         db.session.add(membership)
         db.session.commit()
-        logger.info(f"User {user_id} added to room '{room.name}' (ID: {room_id}).")
+        logger.info(
+            f"User {user_id} added to room '{room.name}' (ID: {room_id}).")
         # Możesz wysłać event Socket.IO, aby poinformować o nowym członku pokoju.
         return jsonify({"message": "User added to room successfully"}), 201
     except Exception as e:
@@ -1192,7 +1471,8 @@ def add_room_member(room_id):
         return jsonify({"error": "Server error adding member"}), 500
 
 
-@app.route('/rooms/<int:room_id>/members/<int:user_id_to_leave>', methods=['DELETE'])
+@app.route('/rooms/<int:room_id>/members/<int:user_id_to_leave>',
+           methods=['DELETE'])
 def remove_room_member(room_id, user_id_to_leave):
     data = request.get_json()
     admin_id_from_request = data.get('admin_id') if data else None
@@ -1203,22 +1483,30 @@ def remove_room_member(room_id, user_id_to_leave):
 
     # Sprawdź, czy żądający użytkownik to ten, który opuszcza, lub admin
     initiator_user_id_str = request.headers.get('X-Initiator-User-ID')
-    initiator_user_id = int(initiator_user_id_str) if initiator_user_id_str and initiator_user_id_str.isdigit() else None
-    
+    initiator_user_id = int(
+        initiator_user_id_str
+    ) if initiator_user_id_str and initiator_user_id_str.isdigit() else None
+
     is_self_leave_action = (initiator_user_id is not None and initiator_user_id == user_id_to_leave) or \
                            (admin_id_from_request is not None and admin_id_from_request == user_id_to_leave)
 
-    is_admin_action_on_other = (admin_id_from_request is not None and 
-                                room_to_manage.creator_id == admin_id_from_request and 
-                                user_id_to_leave != admin_id_from_request)
+    is_admin_action_on_other = (admin_id_from_request is not None
+                                and room_to_manage.creator_id
+                                == admin_id_from_request
+                                and user_id_to_leave != admin_id_from_request)
 
     if not is_self_leave_action and not is_admin_action_on_other:
-        if admin_id_from_request is None and not is_self_leave_action: # Jeśli nie admin i nie self-leave
-             return jsonify({"error": "Admin ID or self-leave action required"}), 400
+        if admin_id_from_request is None and not is_self_leave_action:  # Jeśli nie admin i nie self-leave
+            return jsonify({"error":
+                            "Admin ID or self-leave action required"}), 400
         # Jeśli admin_id podano, ale nie jest twórcą (a nie jest to self-leave)
         elif admin_id_from_request != room_to_manage.creator_id and not is_self_leave_action:
-             logger.warning(f"User {admin_id_from_request} (not creator) tried to remove {user_id_to_leave}.")
-             return jsonify({"error": "Only the room creator can remove other members"}), 403
+            logger.warning(
+                f"User {admin_id_from_request} (not creator) tried to remove {user_id_to_leave}."
+            )
+            return jsonify(
+                {"error":
+                 "Only the room creator can remove other members"}), 403
         # Pozostałe przypadki powinny być już obsłużone przez logikę admin_id lub self_leave_action
 
     # --- NOWE ZMIANY (CHAT SERVER - Usuwanie pokoju przez twórcę) ---
@@ -1227,71 +1515,101 @@ def remove_room_member(room_id, user_id_to_leave):
         room_name_for_log = room_to_manage.name
         room_id_for_event = room_to_manage.id
         creator_username = room_to_manage.creator.username if room_to_manage.creator else "Twórca"
-        
+
         # Pobierz listę ID członków PRZED usunięciem pokoju, aby ich powiadomić
-        member_ids_before_delete = [m.user_id for m in room_to_manage.memberships]
+        member_ids_before_delete = [
+            m.user_id for m in room_to_manage.memberships
+        ]
 
         try:
             # Usunięcie wiadomości powiązanych z pokojem (jeśli cascade nie jest ustawione)
             # Message.query.filter_by(room_id=room_to_manage.id).delete()
             # Usunięcie członkostw (jeśli cascade nie jest ustawione)
             # RoomMembership.query.filter_by(room_id=room_to_manage.id).delete()
-            
-            db.session.delete(room_to_manage) # To powinno usunąć pokój i kaskadowo resztę
+
+            db.session.delete(
+                room_to_manage)  # To powinno usunąć pokój i kaskadowo resztę
             db.session.commit()
-            
-            logger.info(f"Room '{room_name_for_log}' (ID: {room_id_for_event}) was deleted by its creator (ID: {user_id_to_leave}).")
+
+            logger.info(
+                f"Room '{room_name_for_log}' (ID: {room_id_for_event}) was deleted by its creator (ID: {user_id_to_leave})."
+            )
 
             # Poinformuj wszystkich byłych członków, że pokój został usunięty
             # Używamy zebranych wcześniej member_ids
             for member_id in member_ids_before_delete:
-                socketio.emit('room_deleted_by_creator', 
-                              {'room_id': room_id_for_event, 'room_name': room_name_for_log, 
-                               'creator_id': user_id_to_leave, 'creator_username': creator_username}, 
-                              room=str(member_id)) # Wyślij do prywatnego pokoju każdego byłego członka
-            
-            logger.debug(f"Emitted 'room_deleted_by_creator' to former members of room {room_id_for_event}.")
-            return jsonify({"message": f"Room '{room_name_for_log}' and your membership have been deleted."}), 200
+                socketio.emit(
+                    'room_deleted_by_creator', {
+                        'room_id': room_id_for_event,
+                        'room_name': room_name_for_log,
+                        'creator_id': user_id_to_leave,
+                        'creator_username': creator_username
+                    },
+                    room=str(member_id)
+                )  # Wyślij do prywatnego pokoju każdego byłego członka
+
+            logger.debug(
+                f"Emitted 'room_deleted_by_creator' to former members of room {room_id_for_event}."
+            )
+            return jsonify({
+                "message":
+                f"Room '{room_name_for_log}' and your membership have been deleted."
+            }), 200
 
         except Exception as e_room_delete:
             db.session.rollback()
-            logger.exception(f"Error deleting room '{room_name_for_log}' (ID: {room_id_for_event}) by creator: {e_room_delete}")
+            logger.exception(
+                f"Error deleting room '{room_name_for_log}' (ID: {room_id_for_event}) by creator: {e_room_delete}"
+            )
             return jsonify({"error": "Server error during room deletion"}), 500
     # --- KONIEC NOWYCH ZMIAN ---
-    else: # Standardowe opuszczanie przez nie-twórcę lub usuwanie członka przez admina
-        membership = RoomMembership.query.filter_by(user_id=user_id_to_leave, room_id=room_id).first()
+    else:  # Standardowe opuszczanie przez nie-twórcę lub usuwanie członka przez admina
+        membership = RoomMembership.query.filter_by(user_id=user_id_to_leave,
+                                                    room_id=room_id).first()
         if not membership:
             return jsonify({"error": "User is not a member of this room"}), 404
 
         try:
             db.session.delete(membership)
             db.session.commit()
-            
+
             user_left_obj = User.query.get(user_id_to_leave)
             user_left_username = user_left_obj.username if user_left_obj else f"ID {user_id_to_leave}"
             action_log_message = ""
-            
-            if is_self_leave_action: # Nie-twórca opuszcza
+
+            if is_self_leave_action:  # Nie-twórca opuszcza
                 action_log_message = f"User '{user_left_username}' (ID: {user_id_to_leave}) left room '{room_to_manage.name}' (ID: {room_id})."
-                socketio.emit('member_left_room', 
-                              {'room_id': room_id, 'user_id': user_id_to_leave, 'username': user_left_username}, 
+                socketio.emit('member_left_room', {
+                    'room_id': room_id,
+                    'user_id': user_id_to_leave,
+                    'username': user_left_username
+                },
                               room=str(room_id))
-            else: # Admin usuwa kogoś
+            else:  # Admin usuwa kogoś
                 admin_obj = User.query.get(admin_id_from_request)
                 admin_username = admin_obj.username if admin_obj else f"ID {admin_id_from_request}"
-                action_log_message = (f"User '{user_left_username}' (ID: {user_id_to_leave}) removed from room '{room_to_manage.name}' (ID: {room_id}) "
-                                      f"by admin '{admin_username}' (ID: {admin_id_from_request}).")
-                socketio.emit('member_removed_from_room', 
-                              {'room_id': room_id, 'removed_user_id': user_id_to_leave, 'removed_username': user_left_username, 
-                               'admin_id': admin_id_from_request, 'admin_username': admin_username}, 
+                action_log_message = (
+                    f"User '{user_left_username}' (ID: {user_id_to_leave}) removed from room '{room_to_manage.name}' (ID: {room_id}) "
+                    f"by admin '{admin_username}' (ID: {admin_id_from_request})."
+                )
+                socketio.emit('member_removed_from_room', {
+                    'room_id': room_id,
+                    'removed_user_id': user_id_to_leave,
+                    'removed_username': user_left_username,
+                    'admin_id': admin_id_from_request,
+                    'admin_username': admin_username
+                },
                               room=str(room_id))
-            
+
             logger.info(action_log_message)
-            return jsonify({"message": "User removed/left room successfully"}), 200
-            
+            return jsonify({"message":
+                            "User removed/left room successfully"}), 200
+
         except Exception as e_member_remove:
             db.session.rollback()
-            logger.exception(f"Error removing member {user_id_to_leave} from room {room_id}: {e_member_remove}")
+            logger.exception(
+                f"Error removing member {user_id_to_leave} from room {room_id}: {e_member_remove}"
+            )
             return jsonify({"error": "Server error removing member"}), 500
 
 
@@ -1299,22 +1617,39 @@ def remove_room_member(room_id, user_id_to_leave):
 @app.route('/users/<int:user_to_block_id>/block', methods=['POST'])
 def block_user_stub(user_to_block_id):
     # W przyszłości: Wymaga uwierzytelnienia, kto blokuje
-    # blocker_id = get_current_user_id_from_token_or_session() 
+    # blocker_id = get_current_user_id_from_token_or_session()
     # Zapis do bazy danych: BlockedUsers.add(blocker_id, user_to_block_id)
-    blocker_id_temp = request.json.get('blocker_id', "NieznanyBlokujący") # Dla testów, klient może to wysłać
-    logger.info(f"[STUB] Żądanie zablokowania użytkownika ID: {user_to_block_id} przez ID: {blocker_id_temp}")
+    blocker_id_temp = request.json.get(
+        'blocker_id', "NieznanyBlokujący")  # Dla testów, klient może to wysłać
+    logger.info(
+        f"[STUB] Żądanie zablokowania użytkownika ID: {user_to_block_id} przez ID: {blocker_id_temp}"
+    )
     # Można dodać walidację, czy user_to_block_id istnieje
-    return jsonify({"message": f"User {user_to_block_id} is now on your block list (stub)."}), 200
+    return jsonify({
+        "message":
+        f"User {user_to_block_id} is now on your block list (stub)."
+    }), 200
 
-@app.route('/users/<int:user_to_unblock_id>/block', methods=['DELETE']) # Zauważ, że używam /block z DELETE
+
+@app.route('/users/<int:user_to_unblock_id>/block',
+           methods=['DELETE'])  # Zauważ, że używam /block z DELETE
 def unblock_user_stub(user_to_unblock_id):
     # W przyszłości: Wymaga uwierzytelnienia
     # blocker_id = get_current_user_id_from_token_or_session()
     # Usunięcie z bazy: BlockedUsers.remove(blocker_id, user_to_unblock_id)
-    unblocker_id_temp = request.json.get('unblocker_id', "NieznanyOdblokowujący")
-    logger.info(f"[STUB] Żądanie odblokowania użytkownika ID: {user_to_unblock_id} przez ID: {unblocker_id_temp}")
-    return jsonify({"message": f"User {user_to_unblock_id} removed from your block list (stub)."}), 204 # 204 No Content jest typowe dla DELETE
+    unblocker_id_temp = request.json.get('unblocker_id',
+                                         "NieznanyOdblokowujący")
+    logger.info(
+        f"[STUB] Żądanie odblokowania użytkownika ID: {user_to_unblock_id} przez ID: {unblocker_id_temp}"
+    )
+    return jsonify({
+        "message":
+        f"User {user_to_unblock_id} removed from your block list (stub)."
+    }), 204  # 204 No Content jest typowe dla DELETE
+
+
 # --- KONIEC NOWYCH ZMIAN ---
+
 
 @app.route('/rooms/<int:room_id>/messages', methods=['GET'])
 def get_room_messages(room_id):
@@ -1331,10 +1666,11 @@ def get_room_messages(room_id):
 
     # --- NOWE ZMIANY (CHAT GRUPOWY - Bezpieczeństwo - Etap 3/5) ---
     # Sprawdź, czy użytkownik jest członkiem pokoju
-    membership = RoomMembership.query.filter_by(user_id=user_id, room_id=room_id).first()
+    membership = RoomMembership.query.filter_by(user_id=user_id,
+                                                room_id=room_id).first()
     if not membership:
         # Zamiast 404, używamy 403 Forbidden, bo zasób istnieje, ale dostęp jest zabroniony.
-        return jsonify({"error": "You are not a member of this room"}), 403 
+        return jsonify({"error": "You are not a member of this room"}), 403
     # --- KONIEC NOWYCH ZMIAN ---
 
     q = Message.query.filter(Message.room_id == room_id)
@@ -1356,7 +1692,6 @@ def get_room_messages(room_id):
     }), 200
 
 
-
 # --- NOWE ZMIANY ---
 @app.route('/user/<int:user_id>', methods=['PUT'])
 def update_username(user_id):
@@ -1368,16 +1703,19 @@ def update_username(user_id):
 
     # Opcjonalnie: walidacja długości nazwy użytkownika, znaków itp.
     if not (3 <= len(new_username) <= 80):
-        return jsonify({"error": "Username must be between 3 and 80 characters"}), 400
-    
+        return jsonify(
+            {"error": "Username must be between 3 and 80 characters"}), 400
+
     user_to_update = User.query.get(user_id)
     if not user_to_update:
         return jsonify({"error": "User not found"}), 404
 
     # Sprawdź, czy nowa nazwa użytkownika jest już zajęta przez INNEGO użytkownika
-    existing_user_with_new_name = User.query.filter_by(username=new_username).first()
+    existing_user_with_new_name = User.query.filter_by(
+        username=new_username).first()
     if existing_user_with_new_name and existing_user_with_new_name.id != user_id:
-        return jsonify({"error": "Username already taken by another user"}), 409 # Conflict
+        return jsonify({"error": "Username already taken by another user"
+                        }), 409  # Conflict
 
     # Jeśli nazwa jest taka sama jak obecna, nic nie robimy
     if user_to_update.username == new_username:
@@ -1389,11 +1727,16 @@ def update_username(user_id):
         logger.info(f"User {user_id} username updated to: {new_username}")
         # Możemy również poinformować SocketIO o zmianie nazwy użytkownika,
         # ale na razie klient będzie odświeżał swoją nazwę po sukcesie.
-        return jsonify({"message": "Username updated successfully", "new_username": new_username}), 200
+        return jsonify({
+            "message": "Username updated successfully",
+            "new_username": new_username
+        }), 200
     except Exception as e:
         db.session.rollback()
         logger.error(f"Error updating username for user {user_id}: {e}")
         return jsonify({"error": "Server error during update"}), 500
+
+
 # --- KONIEC NOWYCH ZMIAN ---
 
 
@@ -1413,11 +1756,15 @@ def register_user():
         validated_email = validate_email(email).email
     except EmailNotValidError:
         return jsonify({"error": "Invalid email format"}), 400
-    
+
     # --- NOWE ZMIANY (Blacklista E-maili - Sprawdzanie przy rejestracji) ---
     if EmailBlacklist.query.filter_by(email=validated_email).first():
-        logger.warning(f"Registration attempt with blacklisted email: {validated_email}")
-        return jsonify({"error": "This email address cannot be used for registration."}), 403 # Forbidden
+        logger.warning(
+            f"Registration attempt with blacklisted email: {validated_email}")
+        return jsonify({
+            "error":
+            "This email address cannot be used for registration."
+        }), 403  # Forbidden
     # --- KONIEC NOWYCH ZMIAN ---
 
     if User.query.filter_by(username=username).first():
@@ -1430,7 +1777,11 @@ def register_user():
     db.session.add(new_user)
     db.session.commit()
     logger.info(f"New user registered: {username}")
-    return jsonify({"message": "User registered successfully", "user_id": new_user.id}), 201
+    return jsonify({
+        "message": "User registered successfully",
+        "user_id": new_user.id
+    }), 201
+
 
 @app.route('/login', methods=['POST'])
 def login_user():
@@ -1448,19 +1799,28 @@ def login_user():
     user = User.query.filter_by(email=validated_email).first()
     if not user:
         return jsonify({"error": "Email not registered"}), 404
-    
+
     # --- NOWE ZMIANY (Panel Admina - Sprawdzanie bana przy logowaniu) ---
     if user.is_banned:
-        logger.warning(f"Login attempt by banned user: {user.username} (ID: {user.id})")
-        return jsonify({"error": "Your account has been banned."}), 403 # Forbidden
+        logger.warning(
+            f"Login attempt by banned user: {user.username} (ID: {user.id})")
+        return jsonify({"error":
+                        "Your account has been banned."}), 403  # Forbidden
     # --- KONIEC NOWYCH ZMIAN ---
 
     if not user.check_password(password):
         return jsonify({"error": "Incorrect password"}), 401
 
     logger.info(f"User logged in: {user.username}")
-    return jsonify({"message": "Logged in successfully", "user_id": user.id, "username": user.username}), 200
+    return jsonify({
+        "message": "Logged in successfully",
+        "user_id": user.id,
+        "username": user.username
+    }), 200
+
+
 # --- KONIEC ZMIAN ---
+
 
 @app.route('/users', methods=['GET'])
 def get_all_users():
@@ -1468,18 +1828,19 @@ def get_all_users():
     users = User.query.all()
     return jsonify([user.to_dict() for user in users]), 200
 
+
 # --- NOWE ZMIANY (CHAT SERVER) ---
 @app.route('/messages/<int:user1_id>/<int:user2_id>', methods=['GET'])
 def get_message_history(user1_id, user2_id):
     # Parametry paginacji
-    limit = min(int(request.args.get('limit', 50)), 100)          # maks. 100 na raz
-    before = request.args.get('before')                          # ISO timestamp
+    limit = min(int(request.args.get('limit', 50)), 100)  # maks. 100 na raz
+    before = request.args.get('before')  # ISO timestamp
 
     # Podstawowy filtr konwersacji
-    q = Message.query.filter(
-        ((Message.sender_id == user1_id) & (Message.receiver_id == user2_id)) |
-        ((Message.sender_id == user2_id) & (Message.receiver_id == user1_id))
-    )
+    q = Message.query.filter((
+        (Message.sender_id == user1_id) & (Message.receiver_id == user2_id))
+                             | ((Message.sender_id == user2_id)
+                                & (Message.receiver_id == user1_id)))
     if before:
         before_dt = datetime.datetime.fromisoformat(before)
         q = q.filter(Message.timestamp < before_dt)
@@ -1487,8 +1848,8 @@ def get_message_history(user1_id, user2_id):
     # Pobierz limit+1 rekordów (żeby sprawdzić, czy jest więcej)
     msgs = q.order_by(Message.timestamp.desc()).limit(limit + 1).all()
     has_more = len(msgs) > limit
-    msgs = msgs[:limit]          # obetnij do parametru limit
-    msgs.reverse()               # odwróć, by były rosnąco po czasie
+    msgs = msgs[:limit]  # obetnij do parametru limit
+    msgs.reverse()  # odwróć, by były rosnąco po czasie
 
     next_before = msgs[0].timestamp.isoformat() if msgs else None
 
@@ -1497,12 +1858,16 @@ def get_message_history(user1_id, user2_id):
         "has_more": has_more,
         "next_before": next_before
     }), 200
+
+
 # --- KONIEC NOWYCH ZMIAN (CHAT SERVER) ---
+
 
 # --- NOWE ZMIANY: Endpoint do wysyłania plików ---
 def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 
 @app.route('/upload_file', methods=['POST'])
 def upload_file():
@@ -1517,22 +1882,29 @@ def upload_file():
         # Generowanie unikalnej nazwy dla pliku na serwerze
         file_ext = original_filename.rsplit('.', 1)[1].lower()
         unique_server_filename = f"{uuid.uuid4().hex}.{file_ext}"
-        
-        upload_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_server_filename)
+
+        upload_path = os.path.join(app.config['UPLOAD_FOLDER'],
+                                   unique_server_filename)
         try:
             file.save(upload_path)
-            logger.info(f"File {original_filename} uploaded successfully as {unique_server_filename}")
+            logger.info(
+                f"File {original_filename} uploaded successfully as {unique_server_filename}"
+            )
             return jsonify({
                 "message": "File uploaded successfully",
-                "attachment_server_filename": unique_server_filename, # Nazwa na serwerze
-                "attachment_original_filename": original_filename, # Oryginalna nazwa
+                "attachment_server_filename":
+                unique_server_filename,  # Nazwa na serwerze
+                "attachment_original_filename":
+                original_filename,  # Oryginalna nazwa
                 "attachment_mimetype": file.mimetype
             }), 201
         except Exception as e:
-            logger.error(f"Could not save uploaded file {original_filename}: {e}")
+            logger.error(
+                f"Could not save uploaded file {original_filename}: {e}")
             return jsonify({"error": "Could not save file on server"}), 500
     else:
         return jsonify({"error": "File type not allowed"}), 400
+
 
 # --- ZMIANY w /download_file ---
 @app.route('/download_file/<server_filename>', methods=['GET'])
@@ -1542,21 +1914,24 @@ def download_file(server_filename):
     try:
         # Znajdź wiadomość (lub osobną tabelę załączników w przyszłości),
         # aby pobrać oryginalną nazwę pliku powiązaną z server_filename.
-        message_with_attachment = Message.query.filter_by(attachment_server_filename=server_filename).first()
-        
-        original_name_to_suggest = server_filename # Domyślnie, jeśli nie znajdziemy oryginalnej
+        message_with_attachment = Message.query.filter_by(
+            attachment_server_filename=server_filename).first()
+
+        original_name_to_suggest = server_filename  # Domyślnie, jeśli nie znajdziemy oryginalnej
         if message_with_attachment and message_with_attachment.attachment_original_filename:
             original_name_to_suggest = message_with_attachment.attachment_original_filename
-        
+
         # --- Bezpieczniejsze tworzenie nazwy do pobrania ---
         # Usuń potencjalnie niebezpieczne znaki z sugerowanej nazwy, ale zachowaj czytelność
         safe_download_name = secure_filename(original_name_to_suggest)
-        if not safe_download_name: # Jeśli secure_filename usunęło wszystko
+        if not safe_download_name:  # Jeśli secure_filename usunęło wszystko
             safe_download_name = "downloaded_file"
         # --- Koniec zmian ---
 
-        logger.info(f"Attempting to send file: {server_filename} with suggested download name: {safe_download_name}")
-        
+        logger.info(
+            f"Attempting to send file: {server_filename} with suggested download name: {safe_download_name}"
+        )
+
         # Użyj parametru download_name (dla nowszych Flask) LUB ustaw nagłówek ręcznie
         # send_from_directory samo w sobie próbuje ustawić Content-Disposition,
         # ale download_name daje lepszą kontrolę nad sugerowaną nazwą.
@@ -1564,26 +1939,29 @@ def download_file(server_filename):
             app.config['UPLOAD_FOLDER'],
             server_filename,
             as_attachment=True,
-            download_name=safe_download_name # Ta opcja powinna działać w nowszych Flask/Werkzeug
+            download_name=
+            safe_download_name  # Ta opcja powinna działać w nowszych Flask/Werkzeug
         )
-        
+
         # Dla starszych wersji lub jako fallback, można ustawić nagłówek ręcznie:
         # response = make_response(send_from_directory(app.config['UPLOAD_FOLDER'], server_filename, as_attachment=False))
         # response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{urllib.parse.quote(safe_download_name.encode('utf-8'))}"
         # response.headers["Content-Type"] = message_with_attachment.attachment_mimetype if message_with_attachment else 'application/octet-stream'
 
         return response
-        
+
     except FileNotFoundError:
         logger.error(f"File not found for download: {server_filename}")
         return jsonify({"error": "File not found"}), 404
     except Exception as e:
         logger.error(f"Error downloading file {server_filename}: {e}")
         return jsonify({"error": "Could not download file"}), 500
+
+
 # --- KONIEC ZMIAN ---
 
-
 # --- Obsługa SocketIO (Real-time Communication) ---
+
 
 @socketio.on('connect')
 def handle_connect():
@@ -1591,7 +1969,6 @@ def handle_connect():
     logger.info(f"Client connected: {request.sid}")
     # Tu można dodać logikę uwierzytelniania, np. sprawdzić token z 'request.args'
     # if not authenticated: disconnect()
-
 
 
 @socketio.on('disconnect')
@@ -1603,9 +1980,11 @@ def handle_disconnect():
         # --- NOWE ZMIANY (CHAT SERVER) ---
         # Poinformuj innych (oprócz rozłączającego się), że użytkownik jest offline.
         # Używamy argumentu `to=None` (domyślny broadcast) i `skip_sid`.
-        socketio.emit('user_offline', {'user_id': user_id}, skip_sid=request.sid)
+        socketio.emit('user_offline', {'user_id': user_id},
+                      skip_sid=request.sid)
         # --- KONIEC NOWYCH ZMIAN (CHAT SERVER) ---
         logger.info(f"User {user_id} disconnected and went offline.")
+
 
 # --- NOWY HANDLER EVENTU (CHAT GRUPOWY - Bezpieczeństwo - Etap 5/5) ---
 @socketio.on('leave_specific_room')
@@ -1613,9 +1992,10 @@ def handle_leave_specific_room(data):
     """Obsługuje żądanie klienta o opuszczenie konkretnego pokoju Socket.IO."""
     room_id_to_leave = data.get('room_id')
     user_sid = request.sid
-    
+
     if room_id_to_leave is None:
-        logger.warning(f"Leave specific room: Brak room_id od SID: {user_sid}.")
+        logger.warning(
+            f"Leave specific room: Brak room_id od SID: {user_sid}.")
         return
 
     # Pobierz ID użytkownika powiązanego z tym SID, dla logowania
@@ -1626,12 +2006,17 @@ def handle_leave_specific_room(data):
         if user_obj:
             username_leaving = user_obj.username
 
-    logger.info(f"Użytkownik '{username_leaving}' (ID: {user_id_leaving}, SID: {user_sid}) opuszcza pokój Socket.IO: {room_id_to_leave}")
+    logger.info(
+        f"Użytkownik '{username_leaving}' (ID: {user_id_leaving}, SID: {user_sid}) opuszcza pokój Socket.IO: {room_id_to_leave}"
+    )
     leave_room(room_id_to_leave, sid=user_sid)
     # Opcjonalnie: emituj do pokoju, że użytkownik go opuścił,
     # ale serwer i tak nie będzie już do niego wysyłał wiadomości z tego pokoju.
     # socketio.emit('member_left_room', {'room_id': room_id_to_leave, 'user_id': user_id_leaving, 'username': username_leaving}, room=room_id_to_leave)
+
+
 # --- KONIEC NOWEGO HANDLERA ---
+
 
 @socketio.on('authenticate')
 def handle_authentication(data):
@@ -1639,8 +2024,9 @@ def handle_authentication(data):
     user = User.query.get(user_id)
     if user:
         connected_sids_to_user_id[request.sid] = user.id
-        join_room(user.id) # Użytkownik dołącza do swojego prywatnego roomu (ID)
-        
+        join_room(
+            user.id)  # Użytkownik dołącza do swojego prywatnego roomu (ID)
+
         # --- NOWE ZMIANY (CHAT SERVER - Online Status) ---
         # 1. Zbierz aktualną listę ID wszystkich użytkowników online
         # (pamiętaj, że self.connected_sids_to_user_id to słownik SID:user_id)
@@ -1648,31 +2034,47 @@ def handle_authentication(data):
 
         # 2. Poinformuj WSZYSTKICH INNYCH klientów, że ten użytkownik właśnie wszedł online.
         # Używamy skip_sid=request.sid, aby nie wysyłać do samego siebie.
-        socketio.emit('user_online', {'user_id': user.id}, skip_sid=request.sid)
-        logger.info(f"Emitting 'user_online' for User ID: {user.id} to others.")
+        socketio.emit('user_online', {'user_id': user.id},
+                      skip_sid=request.sid)
+        logger.info(
+            f"Emitting 'user_online' for User ID: {user.id} to others.")
 
         # 3. Poinformuj nowo połączonego klienta o pełnej liście użytkowników online.
         # Używamy room=request.sid, aby wysłać tylko do tego konkretnego klienta.
-        emit('online_users_list', {'online_users': online_users_ids_at_connect}, room=request.sid)
-        logger.info(f"Emitting 'online_users_list' to new client ({request.sid}) with {len(online_users_ids_at_connect)} users.")
+        emit('online_users_list',
+             {'online_users': online_users_ids_at_connect},
+             room=request.sid)
+        logger.info(
+            f"Emitting 'online_users_list' to new client ({request.sid}) with {len(online_users_ids_at_connect)} users."
+        )
         # --- KONIEC NOWYCH ZMIAN ---
 
         # --- NOWE ZMIANY (CHAT GRUPOWY - Etap 4/5) ---
         # Dołącz do pokoi, których jest członkiem
         memberships = RoomMembership.query.filter_by(user_id=user.id).all()
         for membership in memberships:
-            join_room(membership.room_id) # Dołącz do roomu grupowego (nazwa to ID pokoju)
-            logger.info(f"User {user.username} (ID: {user.id}) joined group room {membership.room_id}.")
+            join_room(membership.room_id
+                      )  # Dołącz do roomu grupowego (nazwa to ID pokoju)
+            logger.info(
+                f"User {user.username} (ID: {user.id}) joined group room {membership.room_id}."
+            )
         # --- KONIEC NOWYCH ZMIAN (CHAT GRUPOWY - Etap 4/5) ---
 
-        session_data = {"user_id": user.id, "username": user.username, "authenticated": True}
-        
-        emit('authenticated', session_data) 
-        logger.info(f"User {user.username} (ID: {user.id}) authenticated and joined room {user.id}")
+        session_data = {
+            "user_id": user.id,
+            "username": user.username,
+            "authenticated": True
+        }
+
+        emit('authenticated', session_data)
+        logger.info(
+            f"User {user.username} (ID: {user.id}) authenticated and joined room {user.id}"
+        )
 
     else:
         emit('authentication_failed', {"message": "Invalid user_id"})
         logger.warning(f"Authentication failed for user_id: {user_id}")
+
 
 @socketio.on('typing_start')
 def handle_typing_start(data):
@@ -1683,15 +2085,22 @@ def handle_typing_start(data):
     """
     sender_id = data.get('sender_id')
     receiver_id = data.get('receiver_id')
-    
+
     sender = User.query.get(sender_id)
     if not sender:
         logger.warning(f"Typing start failed: Invalid sender_id ({sender_id})")
         return
 
     # Emituj do odbiorcy (do jego roomu)
-    socketio.emit('typing_update', {'sender_id': sender_id, 'is_typing': True}, room=receiver_id)
-    logger.debug(f"User {sender.username} (ID: {sender_id}) started typing to {receiver_id}.")
+    socketio.emit('typing_update', {
+        'sender_id': sender_id,
+        'is_typing': True
+    },
+                  room=receiver_id)
+    logger.debug(
+        f"User {sender.username} (ID: {sender_id}) started typing to {receiver_id}."
+    )
+
 
 # --- NOWE ZMIANY (CHAT SERVER - Edycja wiadomości) ---
 @socketio.on('edit_message')
@@ -1705,32 +2114,59 @@ def handle_edit_message(data):
     editor_user_id = data.get('editor_user_id')
 
     if message_id is None or new_content is None or editor_user_id is None:
-        logger.warning("Edit message: Brak message_id, new_content lub editor_user_id.")
-        emit('message_edit_failed', {'message_id': message_id, 'error': 'Niekompletne żądanie.'}, room=request.sid)
+        logger.warning(
+            "Edit message: Brak message_id, new_content lub editor_user_id.")
+        emit('message_edit_failed', {
+            'message_id': message_id,
+            'error': 'Niekompletne żądanie.'
+        },
+             room=request.sid)
         return
 
     message_to_edit = Message.query.get(message_id)
 
     if not message_to_edit:
-        logger.warning(f"Edit message: Wiadomość o ID {message_id} nie znaleziona.")
-        emit('message_edit_failed', {'message_id': message_id, 'error': 'Wiadomość nie istnieje.'}, room=request.sid)
+        logger.warning(
+            f"Edit message: Wiadomość o ID {message_id} nie znaleziona.")
+        emit('message_edit_failed', {
+            'message_id': message_id,
+            'error': 'Wiadomość nie istnieje.'
+        },
+             room=request.sid)
         return
 
     # Autoryzacja: Tylko nadawca może edytować swoją wiadomość
     if message_to_edit.sender_id != editor_user_id:
-        logger.warning(f"Edit message: Użytkownik {editor_user_id} próbował edytować wiadomość ID {message_id}, której nie jest nadawcą (nadawca: {message_to_edit.sender_id}).")
-        emit('message_edit_failed', {'message_id': message_id, 'error': 'Nie masz uprawnień do edycji tej wiadomości.'}, room=request.sid)
+        logger.warning(
+            f"Edit message: Użytkownik {editor_user_id} próbował edytować wiadomość ID {message_id}, której nie jest nadawcą (nadawca: {message_to_edit.sender_id})."
+        )
+        emit('message_edit_failed', {
+            'message_id': message_id,
+            'error': 'Nie masz uprawnień do edycji tej wiadomości.'
+        },
+             room=request.sid)
         return
 
     # Wiadomość nie może być pusta
     if not new_content.strip():
-        logger.warning(f"Edit message: Pusta treść edycji dla wiadomości ID {message_id}.")
-        emit('message_edit_failed', {'message_id': message_id, 'error': 'Treść wiadomości nie może być pusta.'}, room=request.sid)
+        logger.warning(
+            f"Edit message: Pusta treść edycji dla wiadomości ID {message_id}."
+        )
+        emit('message_edit_failed', {
+            'message_id': message_id,
+            'error': 'Treść wiadomości nie może być pusta.'
+        },
+             room=request.sid)
         return
-    
-    if len(new_content) > 5000: # Limit długości treści
-        logger.warning(f"Edit message: Treść zbyt długa dla wiadomości ID {message_id}.")
-        emit('message_edit_failed', {'message_id': message_id, 'error': 'Treść wiadomości jest zbyt długa.'}, room=request.sid)
+
+    if len(new_content) > 5000:  # Limit długości treści
+        logger.warning(
+            f"Edit message: Treść zbyt długa dla wiadomości ID {message_id}.")
+        emit('message_edit_failed', {
+            'message_id': message_id,
+            'error': 'Treść wiadomości jest zbyt długa.'
+        },
+             room=request.sid)
         return
 
     # Jeśli wiadomość miała załącznik i nowa treść jest pusta, zachowaj informację o załączniku.
@@ -1743,44 +2179,68 @@ def handle_edit_message(data):
         # Użytkownik może usunąć tekst, ale załącznik zostanie.
         # Możemy tu wymusić jakąś domyślną treść, np. "[Załącznik]"
         # Na razie pozwalamy na pusty tekst, jeśli jest załącznik.
-        pass # Nie zmieniamy treści, jeśli jest załącznik, a nowa treść jest pusta
-    elif not new_content.strip() and not message_to_edit.attachment_server_filename:
+        pass  # Nie zmieniamy treści, jeśli jest załącznik, a nowa treść jest pusta
+    elif not new_content.strip(
+    ) and not message_to_edit.attachment_server_filename:
         # Jeśli wiadomość nie ma załącznika i nowa treść jest pusta, to jest to błąd
-        logger.warning(f"Edit message: Wiadomość bez załącznika nie może mieć pustej treści po edycji (ID: {message_id}).")
-        emit('message_edit_failed', {'message_id': message_id, 'error': 'Wiadomość tekstowa nie może być pusta.'}, room=request.sid)
+        logger.warning(
+            f"Edit message: Wiadomość bez załącznika nie może mieć pustej treści po edycji (ID: {message_id})."
+        )
+        emit('message_edit_failed', {
+            'message_id': message_id,
+            'error': 'Wiadomość tekstowa nie może być pusta.'
+        },
+             room=request.sid)
         return
-
 
     try:
         message_to_edit.content = new_content
         # --- NOWE ZMIANY ---
-        message_to_edit.edited_at = datetime.datetime.now() # Ustaw czas edycji
+        message_to_edit.edited_at = datetime.datetime.now(
+        )  # Ustaw czas edycji
         # --- KONIEC NOWYCH ZMIAN ---
         db.session.commit()
-        logger.info(f"Edit message: Wiadomość o ID {message_id} została edytowana przez użytkownika {editor_user_id}.")
+        logger.info(
+            f"Edit message: Wiadomość o ID {message_id} została edytowana przez użytkownika {editor_user_id}."
+        )
 
         # Przygotuj zaktualizowane dane wiadomości (zawiera nową treść)
         updated_message_data = message_to_edit.to_dict()
 
         # Poinformuj nadawcę (który edytował)
-        emit('message_edited_successfully', updated_message_data, room=request.sid)
+        emit('message_edited_successfully',
+             updated_message_data,
+             room=request.sid)
 
         # Poinformuj drugiego uczestnika rozmowy
         other_participant_id = None
-        if message_to_edit.receiver_id == editor_user_id: # Jeśli edytował odbiorca (rzadko)
+        if message_to_edit.receiver_id == editor_user_id:  # Jeśli edytował odbiorca (rzadko)
             other_participant_id = message_to_edit.sender_id
-        elif message_to_edit.sender_id == editor_user_id: # Jeśli edytował nadawca
+        elif message_to_edit.sender_id == editor_user_id:  # Jeśli edytował nadawca
             other_participant_id = message_to_edit.receiver_id
 
         if other_participant_id:
-            logger.debug(f"Edit message: Informowanie drugiego uczestnika (ID: {other_participant_id}) o edycji wiadomości {message_id}.")
-            socketio.emit('message_edited_successfully', updated_message_data, room=other_participant_id)
+            logger.debug(
+                f"Edit message: Informowanie drugiego uczestnika (ID: {other_participant_id}) o edycji wiadomości {message_id}."
+            )
+            socketio.emit('message_edited_successfully',
+                          updated_message_data,
+                          room=other_participant_id)
 
     except Exception as e_db_edit:
         db.session.rollback()
-        logger.error(f"Edit message: Błąd bazy danych podczas edycji wiadomości ID {message_id}: {e_db_edit}")
-        emit('message_edit_failed', {'message_id': message_id, 'error': 'Błąd serwera podczas edycji wiadomości.'}, room=request.sid)
+        logger.error(
+            f"Edit message: Błąd bazy danych podczas edycji wiadomości ID {message_id}: {e_db_edit}"
+        )
+        emit('message_edit_failed', {
+            'message_id': message_id,
+            'error': 'Błąd serwera podczas edycji wiadomości.'
+        },
+             room=request.sid)
+
+
 # --- KONIEC NOWYCH ZMIAN (CHAT SERVER - Edycja wiadomości) ---
+
 
 # --- NOWE ZMIANY: Obsługa usuwania wiadomości ---
 # --- NOWE ZMIANY: Obsługa usuwania wiadomości ---
@@ -1791,317 +2251,55 @@ def handle_delete_message(data):
     Wymaga: {'message_id': <ID_wiadomości>, 'deleter_user_id': <ID_użytkownika_żądającego_usunięcia>}
     """
     message_id = data.get('message_id')
-    deleter_user_id = data.get('deleter_user_id') # ID użytkownika, który kliknął "Usuń"
-    
+    deleter_user_id = data.get(
+        'deleter_user_id')  # ID użytkownika, który kliknął "Usuń"
+
     if message_id is None or deleter_user_id is None:
         logger.warning("Delete message: Brak message_id lub deleter_user_id.")
-        emit('message_delete_failed', {'message_id': message_id, 'error': 'Niekompletne żądanie.'}, room=request.sid)
+        emit('message_delete_failed', {
+            'message_id': message_id,
+            'error': 'Niekompletne żądanie.'
+        },
+             room=request.sid)
         return
 
     message_to_delete = Message.query.get(message_id)
 
     if not message_to_delete:
-        logger.warning(f"Delete message: Wiadomość o ID {message_id} nie znaleziona.")
-        emit('message_delete_failed', {'message_id': message_id, 'error': 'Wiadomość nie istnieje.'}, room=request.sid)
+        logger.warning(
+            f"Delete message: Wiadomość o ID {message_id} nie znaleziona.")
+        emit('message_delete_failed', {
+            'message_id': message_id,
+            'error': 'Wiadomość nie istnieje.'
+        },
+             room=request.sid)
         return
 
     if message_to_delete.sender_id != deleter_user_id:
-        logger.warning(f"Delete message: Użytkownik {deleter_user_id} próbował usunąć wiadomość ID {message_id}, której nie jest nadawcą (nadawca: {message_to_delete.sender_id}).")
-        emit('message_delete_failed', {'message_id': message_id, 'error': 'Nie masz uprawnień do usunięcia tej wiadomości.'}, room=request.sid)
+        logger.warning(
+            f"Delete message: Użytkownik {deleter_user_id} próbował usunąć wiadomość ID {message_id}, której nie jest nadawcą (nadawca: {message_to_delete.sender_id})."
+        )
+        emit('message_delete_failed', {
+            'message_id': message_id,
+            'error': 'Nie masz uprawnień do usunięcia tej wiadomości.'
+        },
+             room=request.sid)
         return
-        
+
     if message_to_delete.attachment_server_filename:
         try:
-            file_path_on_server = os.path.join(app.config['UPLOAD_FOLDER'], message_to_delete.attachment_server_filename)
+            file_path_on_server = os.path.join(
+                app.config['UPLOAD_FOLDER'],
+                message_to_delete.attachment_server_filename)
             if os.path.exists(file_path_on_server):
                 os.remove(file_path_on_server)
-                logger.info(f"Delete message: Usunięto plik załącznika: {file_path_on_server}")
+                logger.info(
+                    f"Delete message: Usunięto plik załącznika: {file_path_on_server}"
+                )
             else:
-                logger.warning(f"Delete message: Plik załącznika {message_to_delete.attachment_server_filename} nie został znaleziony na serwerze do usunięcia.")
+                logger.warning(
+                    f"Delete message: Plik załącznika {message_to_delete.attachment_server_filename} nie został znaleziony na serwerze do usunięcia."
+                )
         except Exception as e_file_delete:
-            logger.error(f"Delete message: Błąd podczas usuwania pliku załącznika {message_to_delete.attachment_server_filename}: {e_file_delete}")
-
-    # --- NOWE ZMIANY (CHAT SERVER - Poprawka usuwania wiadomości grupowych) ---
-    original_sender_id = message_to_delete.sender_id
-    original_receiver_id = message_to_delete.receiver_id
-    original_room_id = message_to_delete.room_id # Zapamiętaj ID pokoju, jeśli to wiadomość grupowa
-    # --- KONIEC NOWYCH ZMIAN (CHAT SERVER - Poprawka usuwania wiadomości grupowych) ---
-    
-    try:
-        db.session.delete(message_to_delete)
-        db.session.commit()
-        logger.info(f"Delete message: Wiadomość o ID {message_id} została usunięta z bazy przez użytkownika {deleter_user_id}.")
-
-        payload_success = {'success': True, 'message_id': message_id, 'room_id': original_room_id} # Dodaj room_id do payloadu
-
-        # Poinformuj nadawcę (który wysłał żądanie usunięcia)
-        emit('message_deleted_successfully', payload_success, room=request.sid)
-        
-        # --- NOWE ZMIANY (CHAT SERVER - Poprawka usuwania wiadomości grupowych) ---
-        if original_room_id: # Jeśli to była wiadomość grupowa
-            # Poinformuj wszystkich W POKOJU (oprócz tego, kto usunął)
-            logger.debug(f"Delete message: Informowanie członków pokoju {original_room_id} o usunięciu wiadomości {message_id}.")
-            socketio.emit('message_deleted_successfully', payload_success, room=original_room_id, skip_sid=request.sid)
-        elif original_receiver_id and original_receiver_id != deleter_user_id: # Wiadomość prywatna (logika bez zmian)
-            other_participant_id = original_receiver_id
-            logger.debug(f"Delete message: Informowanie drugiego uczestnika (ID: {other_participant_id}) o usunięciu wiadomości {message_id}.")
-            socketio.emit('message_deleted_successfully', payload_success, room=other_participant_id)
-        # --- KONIEC NOWYCH ZMIAN (CHAT SERVER - Poprawka usuwania wiadomości grupowych) ---
-            
-    except Exception as e_db_delete:
-        db.session.rollback()
-        logger.error(f"Delete message: Błąd bazy danych podczas usuwania wiadomości ID {message_id}: {e_db_delete}")
-        emit('message_delete_failed', {'message_id': message_id, 'error': 'Błąd serwera podczas usuwania wiadomości.'}, room=request.sid)
-# --- KONIEC NOWYCH ZMIAN (CHAT SERVER - Usuwanie wiadomości) ---
-
-# --- NOWE ZMIANY: Event dla oznaczania wiadomości jako przeczytanej ---
-@socketio.on('mark_messages_as_read')
-def handle_mark_as_read(data):
-    """
-    Obsługuje żądanie oznaczenia wiadomości jako przeczytanych.
-    Wymaga: {'message_ids': [id1, id2, ...], 'reader_id': <ID_czytającego>}
-    Lub:    {'conversation_partner_id': <ID_partnera>, 'reader_id': <ID_czytającego>}
-             (wtedy oznacza wszystkie nieprzeczytane od tego partnera dla tego czytelnika)
-    """
-    reader_user_id = data.get('reader_id')
-    message_ids_to_mark = data.get('message_ids') # Lista ID wiadomości
-    conversation_partner_id = data.get('conversation_partner_id') # Alternatywnie, ID drugiej osoby w czacie
-
-    if reader_user_id is None:
-        logger.warning("Mark as read: Brak reader_id.")
-        return # Nie emituj błędu, aby nie spamować klienta
-
-    updated_message_ids_for_sender_notification = []
-
-    if message_ids_to_mark and isinstance(message_ids_to_mark, list):
-        messages_to_update = Message.query.filter(
-            Message.id.in_(message_ids_to_mark),
-            Message.receiver_id == reader_user_id, # Czytelnik musi być odbiorcą
-            Message.is_read_by_receiver == False
-        ).all()
-    elif conversation_partner_id is not None: # Oznacz wszystkie od tego partnera dla tego czytelnika
-        messages_to_update = Message.query.filter(
-            Message.sender_id == conversation_partner_id,
-            Message.receiver_id == reader_user_id,
-            Message.is_read_by_receiver == False
-        ).all()
-    else:
-        logger.warning("Mark as read: Brak message_ids lub conversation_partner_id.")
-        return
-
-    if not messages_to_update:
-        logger.debug(f"Mark as read: Brak wiadomości do oznaczenia jako przeczytane dla czytelnika {reader_user_id}.")
-        return
-
-    for msg in messages_to_update:
-        msg.is_read_by_receiver = True
-        updated_message_ids_for_sender_notification.append(msg.id)
-        # Poinformuj oryginalnego nadawcę wiadomości (jeśli jest online), że wiadomość została przeczytana
-        if msg.sender_id != reader_user_id: # Nie wysyłaj do siebie samego
-            logger.debug(f"Mark as read: Wysyłanie 'message_read_update' do nadawcy {msg.sender_id} dla wiadomości {msg.id}")
-            # Wysyłamy do pokoju oryginalnego nadawcy
-            socketio.emit('message_read_update', 
-                          {'message_id': msg.id, 'read_by_user_id': reader_user_id, 'is_read': True}, 
-                          room=msg.sender_id)
-    
-    if updated_message_ids_for_sender_notification:
-        try:
-            db.session.commit()
-            logger.info(f"Mark as read: Oznaczono {len(updated_message_ids_for_sender_notification)} wiadomości jako przeczytane przez użytkownika {reader_user_id}.")
-            # Możemy też wysłać potwierdzenie do klienta, który wysłał 'mark_messages_as_read', ale to mniej krytyczne
-        except Exception as e_db_commit:
-            db.session.rollback()
-            logger.error(f"Mark as read: Błąd bazy danych przy oznaczaniu wiadomości jako przeczytanych: {e_db_commit}")
-# --- KONIEC NOWYCH ZMIAN ---
-
-@socketio.on('typing_stop')
-def handle_typing_stop(data):
-    """
-    Obsługuje zatrzymanie pisania wiadomości przez użytkownika.
-    Wymaga: {'sender_id': <ID_nadawcy>, 'receiver_id': <ID_odbiorcy>}
-    Rozgłasza do odbiorcy.
-    """
-    sender_id = data.get('sender_id')
-    receiver_id = data.get('receiver_id')
-
-    sender = User.query.get(sender_id)
-    if not sender:
-        logger.warning(f"Typing stop failed: Invalid sender_id ({sender_id})")
-        return
-
-    # Emituj do odbiorcy (do jego roomu)
-    socketio.emit('typing_update', {'sender_id': sender_id, 'is_typing': False}, room=receiver_id)
-    logger.debug(f"User {sender.username} (ID: {sender_id}) stopped typing to {receiver_id}.")
-
-@socketio.on('send_message') # <-- ZMIANA NAZWY EVENTU, KLIENT TEŻ BĘDZIE MUSIAŁ EMITOWAĆ 'send_message'
-def handle_send_message(data): # <-- ZMIANA NAZWY FUNKCJI
-    sender_id = data.get('sender_id')
-    receiver_id = data.get('receiver_id') 
-    room_id = data.get('room_id') 
-    content = data.get('content')
-
-    attachment_server_filename = data.get('attachment_server_filename')
-    attachment_original_filename = data.get('attachment_original_filename')
-    attachment_mimetype = data.get('attachment_mimetype')
-    replied_to_message_id = data.get('replied_to_message_id')
-
-    logger.debug(f"[handle_send_message] Received data: {data} from SID {request.sid}") # Logujemy otrzymane dane
-
-    if replied_to_message_id:
-        quoted_msg = Message.query.get(replied_to_message_id)
-        if not quoted_msg:
-            logger.warning(f"[handle_send_message] Message send failed: Replied-to message ID {replied_to_message_id} not found.")
-            emit('message_error', {"message": f"Nie można odpowiedzieć na wiadomość: oryginalna wiadomość (ID: {replied_to_message_id}) nie istnieje."}, room=request.sid)
-            return
-
-    sender = User.query.get(sender_id)
-    receiver = None
-    room = None
-
-    logger.debug(f"[handle_send_message] Processing with Sender ID: {sender_id}, Receiver ID: {receiver_id}, Room ID: {room_id}")
-
-    if not sender: # Najpierw sprawdźmy nadawcę
-        logger.warning(f"[handle_send_message] Message send failed: Invalid sender_id ({sender_id})")
-        emit('message_error', {"message": "Invalid sender"}, room=request.sid)
-        return
-
-    # --- KLUCZOWA LOGIKA WYBORU TRYBU: Prywatny vs Grupowy ---
-    if room_id is not None: # Jeśli room_id jest obecne, traktujemy jako wiadomość grupową
-        room = ChatRoom.query.get(room_id)
-        if not room:
-            logger.warning(f"[handle_send_message] Message send failed: Invalid room_id ({room_id}) for group message.")
-            emit('message_error', {"message": "Invalid room for group message"}, room=request.sid)
-            return
-        # Weryfikacja członkostwa dla wiadomości grupowej
-        if not RoomMembership.query.filter_by(user_id=sender_id, room_id=room.id).first():
-            logger.warning(f"[handle_send_message] Message send failed: Sender {sender_id} is not a member of room {room.id}.")
-            emit('message_error', {"message": "You are not a member of this room"}, room=request.sid)
-            return
-        logger.debug(f"[handle_send_message] Determined message type: GROUP (Room: {room.name})")
-    elif receiver_id is not None: # Jeśli room_id jest None, ale receiver_id jest, to wiadomość prywatna
-        receiver = User.query.get(receiver_id)
-        if not receiver:
-            logger.warning(f"[handle_send_message] Message send failed: Invalid receiver_id ({receiver_id}) for private message.")
-            emit('message_error', {"message": "Invalid receiver for private message"}, room=request.sid)
-            return
-        # --- NOWE ZMIANY (Blokowanie wiadomości prywatnych) ---
-        # Sprawdź, czy ODBIORCA (receiver) zablokował NADAWCĘ (sender)
-        is_sender_blocked_by_receiver = BlockedRelationship.query.filter_by(
-            blocker_id=receiver.id, 
-            blocked_id=sender.id    
-        ).first()
-
-        if is_sender_blocked_by_receiver:
-            logger.warning(f"[handle_send_message] Message send failed (DM): Sender {sender.id} ({sender.username}) is blocked by receiver {receiver.id} ({receiver.username}).")
-            emit('message_error', {"message": f"Nie możesz wysłać wiadomości do {receiver.username}, ponieważ zablokował(a) Cię."}, room=request.sid)
-            return 
-
-        # Opcjonalne: Sprawdź, czy NADAWCA (sender) zablokował ODBIORCĘ (receiver)
-        is_receiver_blocked_by_sender = BlockedRelationship.query.filter_by(
-            blocker_id=sender.id,
-            blocked_id=receiver.id
-        ).first()
-        if is_receiver_blocked_by_sender:
-            logger.warning(f"[handle_send_message] Message send failed (DM): Sender {sender.id} ({sender.username}) has blocked receiver {receiver.id} ({receiver.username}). Client should handle this.")
-            emit('message_error', {"message": f"Zablokowałeś użytkownika {receiver.username}. Odblokuj, aby wysłać wiadomość."}, room=request.sid)
-            return
-        # --- KONIEC NOWYCH ZMIAN ---
-
-        if is_sender_blocked_by_receiver:
-            logger.warning(f"[handle_send_message] Message send failed: Sender {sender.id} ({sender.username}) is blocked by receiver {receiver.id} ({receiver.username}).")
-            emit('message_error', {"message": f"Nie możesz wysłać wiadomości do {receiver.username}, ponieważ zablokował(a) Cię."}, room=request.sid)
-            return # Nie zapisuj i nie wysyłaj wiadomości
-
-        # Opcjonalnie, możesz też sprawdzić, czy nadawca zablokował odbiorcę,
-        # chociaż klient powinien to obsłużyć. Dodanie tego na serwerze jest dodatkowym zabezpieczeniem.
-        is_receiver_blocked_by_sender = BlockedRelationship.query.filter_by(
-            blocker_id=sender.id,
-            blocked_id=receiver.id
-        ).first()
-        if is_receiver_blocked_by_sender:
-            logger.warning(f"[handle_send_message] Message send failed: Sender {sender.id} ({sender.username}) has blocked receiver {receiver.id} ({receiver.username}). Client should have prevented this.")
-            # Możemy tu zdecydować, czy informować klienta. Jeśli klient działa poprawnie, ten warunek nie powinien być spełniony.
-            # emit('message_error', {"message": f"Zablokowałeś użytkownika {receiver.username}. Odblokuj, aby wysłać wiadomość."}, room=request.sid)
-            # Na razie załóżmy, że jeśli nadawca kogoś blokuje, to jego klient i tak uniemożliwi wysłanie.
-            # return 
-        # --- KONIEC NOWYCH ZMIAN ---
-    
-        logger.debug(f"[handle_send_message] Determined message type: PRIVATE (Receiver: {receiver.username})")
-    else: # Ani room_id ani receiver_id
-        logger.warning(f"[handle_send_message] Message send failed: Neither receiver_id nor room_id provided by sender {sender_id}.")
-        emit('message_error', {"message": "Message must have a receiver or a room"}, room=request.sid)
-        return
-    # --- KONIEC KLUCZOWEJ LOGIKI WYBORU TRYBU ---
-
-    if not content and not attachment_server_filename:
-        logger.warning(f"[handle_send_message] Message send failed: Empty content and no attachment from sender {sender_id}.")
-        emit('message_error', {"message": "Message content cannot be empty without an attachment."}, room=request.sid)
-        return
-    
-    if content and len(content) > 5000:
-        logger.warning(f"[handle_send_message] Message send failed: Content too long from sender {sender_id}.")
-        emit('message_error', {"message": "Message content is too long."}, room=request.sid)
-        return
-
-    new_message = Message(
-        sender_id=sender.id,
-        receiver_id=receiver.id if receiver else None,
-        room_id=room.id if room else None,
-        content=content,
-        attachment_server_filename=attachment_server_filename,
-        attachment_original_filename=attachment_original_filename,
-        attachment_mimetype=attachment_mimetype,
-        replied_to_message_id=replied_to_message_id
-    )
-    db.session.add(new_message)
-    db.session.commit()
-
-    msg_data = new_message.to_dict()
-    logger.debug(f"[handle_send_message] Message saved to DB. ID: {new_message.id}. Prepared msg_data: {msg_data}")
-
-    log_msg_prefix = "" # Dla zwięzłości logu na końcu
-
-    if receiver: # Wiadomość prywatna
-        log_msg_prefix = f"PRIVATE message from {sender.username} to {receiver.username}:"
-        logger.info(f"[EMIT] Sending 'private_message_sent' to sender's SID: {request.sid}")
-        emit('private_message_sent', msg_data, room=request.sid)
-        
-        logger.info(f"[EMIT] Sending 'private_message_received' to receiver's room (user ID): {receiver.id}")
-        socketio.emit('private_message_received', msg_data, room=receiver.id)
-    elif room: # Wiadomość grupowa
-        log_msg_prefix = f"GROUP message from {sender.username} to room '{room.name}' (ID: {room.id}):"
-        logger.info(f"[EMIT] Sending 'group_message_sent' to sender's SID: {request.sid} for room {room.id}")
-        emit('group_message_sent', msg_data, room=request.sid)
-
-        logger.info(f"[EMIT] Sending 'group_message_received' to Socket.IO room_id: {room.id}, skipping sender's SID: {request.sid}")
-        socketio.emit('group_message_received', msg_data, room=room.id, skip_sid=request.sid) 
-    else:
-        logger.error("[handle_send_message] CRITICAL: No receiver AND no room. This should not happen!")
-        return # Nie emituj nic, jeśli doszło do tego stanu
-
-    final_log_message = log_msg_prefix
-    if content: final_log_message += f" '{content[:50]}...'"
-    if attachment_original_filename: final_log_message += f" [Attachment: {attachment_original_filename}]"
-    if replied_to_message_id: final_log_message += f" (Replied to: {replied_to_message_id})"
-    logger.info(final_log_message)
-
-
-# --- Główna Funkcja Uruchamiania Serwera ---
-
-if __name__ == '__main__':
-    with app.app_context():
-        # --- NOWE ZMIANY: Utwórz folder UPLOAD, jeśli nie istnieje ---
-        if not os.path.exists(app.config['UPLOAD_FOLDER']):
-            os.makedirs(app.config['UPLOAD_FOLDER'])
-            logger.info(f"Created upload folder: {app.config['UPLOAD_FOLDER']}")
-        # --- KONIEC NOWYCH ZMIAN ---
-        db.create_all()
-        logger.info("Database tables ensured to be created.")
-        
-    logger.info("Starting Flask-SocketIO Chat Server on port 5000.")
-    socketio.run(
-        app,
-        debug=False,
-        port=5000,
-        use_reloader=False
-    )
+            logger.error(
+                f"Delete message: Błąd podczas usuwania pliku załącznika {message_to_delete.attachment_server_filename}: {e_file_delete}"
