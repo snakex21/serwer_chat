@@ -7,7 +7,7 @@ email-validator>=1.1.0
 gevent>=21.0.0          # Potrzebny dla serwera produkcyjnego SocketIO (np. z Gunicorn)
 gevent-websocket>=0.10.0 # Worker dla Gunicorn do obsługi WebSockets z gevent
 gunicorn>=20.0.0        # Serwer produkcyjny WSGI
-
+psycopg2-binary
 # Opcjonalnie, jeśli planujesz używać bazy danych PostgreSQL w chmurze (zalecane):
 # psycopg2-binary>=2.9.0
 
