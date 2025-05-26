@@ -40,6 +40,24 @@ ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'zip', 'rar', '
 # --- KONIEC NOWYCH ZMIAN ---
 MAX_FILE_SIZE_MB = 10 # Maksymalny rozmiar pliku w MB
 
+# Konfiguracja bazy danych
+DATABASE_URL_RENDER = os.environ.get('DATABASE_URL') # Render automatycznie ustawi tę zmienną
+
+if DATABASE_URL_RENDER and DATABASE_URL_RENDER.startswith("postgres://"):
+    # psycopg2 wymaga 'postgresql://' zamiast 'postgres://'
+    SQLALCHEMY_DATABASE_URI_CONFIG = DATABASE_URL_RENDER.replace("postgres://", "postgresql://", 1)
+    logger.info(f"Using PostgreSQL database from Render: {SQLALCHEMY_DATABASE_URI_CONFIG.split('@')[-1]}") # Loguj tylko część bez hasła
+else:
+    # Fallback do SQLite, jeśli DATABASE_URL nie jest dostępna (np. lokalnie)
+    # Możesz to zmienić, jeśli lokalnie też chcesz używać PostgreSQL
+    sqlite_db_path = os.path.join(os.getcwd(), 'chat_fallback.db')
+    SQLALCHEMY_DATABASE_URI_CONFIG = 'sqlite:///' + sqlite_db_path
+    logger.info(f"DATABASE_URL from Render not found or invalid. Falling back to SQLite: {sqlite_db_path}")
+
+app.config['SQLALCHEMY_DATABASE_URI'] = SQLALCHEMY_DATABASE_URI_CONFIG
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SECRET_KEY'] = 'twoj_sekretny_klucz_ktory_musisz_zmienic!' 
+
 app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), UPLOAD_FOLDER)
 app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE_MB * 1024 * 1024 # Ustawienie limitu w bajtach
 # --- KONIEC NOWYCH ZMIAN ---
@@ -53,17 +71,6 @@ app.config['SECRET_KEY'] = 'twoj_sekretny_klucz_ktory_musisz_zmienic!' # WAŻNE:
 # Inicjalizacja SQLAlchemy
 db = SQLAlchemy(app)
 
-# === NOWY BLOK - Tworzenie tabel ===
-with app.app_context():
-    logger.info("Ensuring database tables are created...")
-    try:
-        db.create_all()
-        logger.info("Database tables checked/created successfully.")
-    except Exception as e_create_db:
-        logger.error(f"Error during db.create_all(): {e_create_db}")
-        # W zależności od bazy danych i konfiguracji, tutaj można dodać
-        # bardziej zaawansowaną obsługę błędów lub logowanie.
-# === KONIEC NOWEGO BLOKU ===
 # Inicjalizacja SocketIO
 # W środowisku produkcyjnym 'cors_allowed_origins' powinno być bardziej restrykcyjne.
 # "*" pozwala na połączenia z dowolnego źródła.
